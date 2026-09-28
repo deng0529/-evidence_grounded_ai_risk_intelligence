@@ -25,6 +25,7 @@ For MVP implementation, use the following precedence:
 - `docs/implementation/roadmap-v1.md`
 - `docs/implementation/M0-foundation.md`
 - `docs/implementation/M1-storage.md`
+- `docs/implementation/m1-storage-notes.md` — implemented storage usage and boundaries; does not replace frozen specifications
 - `docs/implementation/M2-governance-ingestion.md`
 - `docs/implementation/M3-accounts-extraction.md`
 - `docs/implementation/M4-validation-reliability.md`

@@ -7,13 +7,21 @@ name = "evidence-grounded-ai-risk-intelligence"
 version = "0.1.0"
 description = "Evidence-grounded risk intelligence domain contracts"
 requires-python = ">=3.12,<3.13"
-dependencies = ["pydantic==2.13.5"]
+dependencies = [
+    "pydantic==2.13.5",
+    "libsql==0.1.11",
+    "boto3==1.43.103",
+    "botocore==1.43.103",
+]
 
 [project.optional-dependencies]
 dev = ["pytest==8.4.2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"risk_intelligence.persistence" = ["migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,8 +8,9 @@ An AI-assisted risk intelligence prototype that combines automated document inge
 
 ## Status
 
-M0 foundation and domain contracts implemented; awaiting human review.
-No live ingestion, persistence adapters, scoring engines or UI are implemented.
+M0 foundation is committed. M1 persistence and immutable evidence storage are
+implemented and awaiting human review. No ingestion, scoring engines or UI are
+implemented; M2 has not started.
 
 ## Local development (Python 3.12)
 
@@ -21,18 +22,30 @@ Use the existing project-local `.venv`. For a fresh checkout, create it with
 .venv\Scripts\python.exe -m pip install -e ".[dev]"
 .venv\Scripts\python.exe -m pytest
 .venv\Scripts\python.exe examples\inspect_contracts.py
+.venv\Scripts\python.exe examples\inspect_storage.py
 ```
 
 The example prints clearly labelled synthetic records constructed with the actual
-models. It performs no retrieval or risk calculation. Tests need no credentials
-or external services. M0 depends only on Pydantic at runtime and pytest for tests.
+models. The storage example uses a temporary SQLite database and local raw files,
+checks exact Decimal/NULL/byte round trips and provenance, then removes its temporary
+directory. Neither example retrieves data or calculates risk. Normal tests are
+offline and need no credentials or external services.
 
 `risk_intelligence.config.load_settings()` reads environment variables explicitly;
 it does not load `.env` files, create directories or connect to services.
-`.env.example` lists safe placeholders. Credentials are optional and excluded
-from settings serialization and representation. Service-specific Turso/R2
-configuration belongs to M1; the unused generic `DATABASE_URL` placeholder has
-been removed.
+`.env.example` lists safe placeholders. Local SQLite/filesystem defaults require
+no credentials. Turso/libSQL and R2 require explicit configuration; production
+rejects local backends. Secrets are excluded from representations and serialization.
+
+Run migrations explicitly after configuring the desired backend:
+
+```powershell
+.venv\Scripts\python.exe -m risk_intelligence.persistence.migrations
+```
+
+With local defaults this creates `data/metadata.sqlite3`; it does not contact
+Turso or R2. Imports never create a database or run migrations. Read the
+[M1 storage notes](docs/implementation/m1-storage-notes.md) before cloud configuration.
 
 See [M0 contract review notes](docs/implementation/m0-contracts.md) for record
 invariants, serialization, interfaces and decisions requiring human review.
