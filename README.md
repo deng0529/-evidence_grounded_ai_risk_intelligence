@@ -8,7 +8,34 @@ An AI-assisted risk intelligence prototype that combines automated document inge
 
 ## Status
 
-Early architecture/specification stage.
+M0 foundation and domain contracts implemented; awaiting human review.
+No live ingestion, persistence adapters, scoring engines or UI are implemented.
+
+## Local development (Python 3.12)
+
+Use the existing project-local `.venv`. For a fresh checkout, create it with
+`py -V:3.12 -m venv .venv`. From the repository root in PowerShell:
+
+```powershell
+.venv\Scripts\python.exe --version
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pytest
+.venv\Scripts\python.exe examples\inspect_contracts.py
+```
+
+The example prints clearly labelled synthetic records constructed with the actual
+models. It performs no retrieval or risk calculation. Tests need no credentials
+or external services. M0 depends only on Pydantic at runtime and pytest for tests.
+
+`risk_intelligence.config.load_settings()` reads environment variables explicitly;
+it does not load `.env` files, create directories or connect to services.
+`.env.example` lists safe placeholders. Credentials are optional and excluded
+from settings serialization and representation. Service-specific Turso/R2
+configuration belongs to M1; the unused generic `DATABASE_URL` placeholder has
+been removed.
+
+See [M0 contract review notes](docs/implementation/m0-contracts.md) for record
+invariants, serialization, interfaces and decisions requiring human review.
 
 ## Planned stack
 
