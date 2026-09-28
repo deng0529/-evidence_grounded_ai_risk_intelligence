@@ -21,6 +21,7 @@ ENV/
 
 # Local data and generated artifacts
 /data/
+docs/human_review/
 *.sqlite3
 *.db
 *.log

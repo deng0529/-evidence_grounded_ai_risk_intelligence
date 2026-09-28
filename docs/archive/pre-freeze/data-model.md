@@ -46,7 +46,7 @@ The detailed database schema will be implemented after the MVP entities and evid
 - confidence
 
 ### Evidence
-See `docs/design-docs/evidence-model.md`.
+See the superseded evidence-model document.
 
 ### RiskIndicator
 - indicator_id

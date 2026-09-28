@@ -15,9 +15,11 @@ Early architecture/specification stage.
 - Python
 - Companies House public data/API
 - Official company websites
-- PostgreSQL/Supabase
-- Streamlit
-- FastAPI where useful
+- Turso for structured relational data
+- Cloudflare R2 for immutable raw evidence/object storage
+- Local filesystem raw-evidence adapter behind storage interfaces for development
+- Streamlit Community Cloud for the Python application and UI
+- FastAPI deferred from the MVP
 - OpenAI API for selected AI tasks
 - pytest
 - Git/GitHub

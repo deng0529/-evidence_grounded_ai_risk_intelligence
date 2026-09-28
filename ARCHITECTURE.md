@@ -70,8 +70,26 @@ Responsible for persistence of:
 
 Database access must be isolated from business logic as far as practical.
 
-### 2.6 Risk engine
-Responsible for converting validated facts into reproducible risk indicators and domain assessments.
+### 2.6 Risk calculation and aggregation
+
+#### M5 — Risk Variable & Leaf Belief Engine
+Computes the 11 risk-variable values from validated facts using frozen
+formulas, directions, thresholds and leaf rules. It consumes M4 evidence
+reliability results and applies frozen Reliability-to-Unknown and
+missing/unavailable/non-comparable input handling. M5 ends with all 11 final
+Low / High / Unknown leaf distributions; it performs no parent aggregation.
+
+#### M6 — Hierarchical ER Aggregation Engine
+Accepts those final M5 leaf distributions unchanged and applies frozen
+importance weights and single-child pass-through rules to aggregate
+Variables → Indicators → Domains → Overall. It produces indicator,
+Governance, Financial and Overall Low / High / Unknown distributions and
+must pass frozen ER regression and stress tests. It must not recalculate
+source facts, financial ratios, governance metrics, leaf thresholds,
+evidence reliability or leaf beliefs.
+
+The interface and existing persistence contracts are described in
+`docs/implementation/roadmap-v1.md`.
 
 Risk calculations should be inspectable and versioned where practical.
 
@@ -173,11 +191,13 @@ When a new feature is requested:
 
 ## 7. Technology direction
 
-Initial implementation may use:
+Current MVP implementation architecture:
 - Python;
-- PostgreSQL/Supabase;
-- Streamlit;
-- FastAPI if/when an API boundary is useful;
+- Turso for structured relational data;
+- Cloudflare R2 for immutable raw evidence/object storage;
+- local filesystem raw-evidence adapter behind storage interfaces for development;
+- Streamlit Community Cloud for the Python application and UI;
+- FastAPI deferred from the MVP;
 - Companies House API;
 - public web/document retrieval;
 - OpenAI API for selected AI tasks;

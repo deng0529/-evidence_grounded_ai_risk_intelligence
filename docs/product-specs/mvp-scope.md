@@ -19,12 +19,18 @@ Demonstrate an end-to-end evidence-grounded company risk workflow using a small 
 ## Initial company set
 Use a small manually selected test set during development. Expand only after the pipeline is reliable.
 
+## Frozen risk scope
+
+Exactly two top-level domains, Governance Risk and Financial Risk, contain
+11 frozen leaf variables as defined in `docs/design-docs/risk-model-v1.md`.
+Business Resilience and resilience indicators are deferred outside the current
+MVP; no third risk domain is implemented.
+
 ## Initial output
 For each company:
 - identity/profile;
 - selected financial indicators;
 - selected governance indicators;
-- selected resilience indicators;
 - validation status;
 - risk assessment;
 - evidence trail.

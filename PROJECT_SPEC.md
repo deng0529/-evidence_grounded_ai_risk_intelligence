@@ -28,12 +28,14 @@ Primary sources:
 Potential future sources may include other authoritative public datasets, but they are outside the first MVP unless required.
 
 ## 4. Initial risk domains
-The MVP should start with a deliberately limited set of risk domains. The initial design target is:
-- Financial / financial resilience
-- Governance
-- Business resilience / operational resilience
+The frozen MVP contains exactly two top-level risk domains:
+- Governance Risk
+- Financial Risk
 
-The exact indicators must be documented before implementation and should be based on observable evidence.
+The 11 leaf variables, indicators, formulas, thresholds and importance weights
+are defined in `docs/design-docs/risk-model-v1.md` and are based on observable
+evidence. Business/operational Resilience is deferred and outside the current
+MVP risk model; it is not a third domain.
 
 ## 5. Core requirements
 
