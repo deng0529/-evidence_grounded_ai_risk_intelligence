@@ -106,6 +106,79 @@ class ValidationStatus(StrEnum):
     PASS = "PASS"
     WARNING = "WARNING"
     FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class ValidationRole(StrEnum):
+    """Rule purpose, distinct from legacy diagnostic severity."""
+
+    INFORMATIONAL = 'INFORMATIONAL'
+    SUPPORT = 'SUPPORT'
+    HARD_FAIL = 'HARD_FAIL'
+
+
+class ValidationStrength(StrEnum):
+    """Explicit substantive support; never inferred from pass counts."""
+
+    NONE = 'NONE'
+    MEANINGFUL = 'MEANINGFUL'
+    STRONG = 'STRONG'
+
+
+class EvidenceUse(StrEnum):
+    """Distinguish construction/admission-only checks from independent support."""
+
+    CONSTRUCTION = 'CONSTRUCTION'
+    ADMISSION_ONLY = 'ADMISSION_ONLY'
+    INDEPENDENT_VALIDATION = 'INDEPENDENT_VALIDATION'
+
+
+class ConflictLevel(StrEnum):
+    """Unresolved uncertainty level, supplied by later domain rules."""
+
+    NONE = 'NONE'
+    PARTIAL_UNRESOLVED = 'PARTIAL_UNRESOLVED'
+    SERIOUS_UNRESOLVED = 'SERIOUS_UNRESOLVED'
+
+
+class ConflictResolution(StrEnum):
+    """Recorded explanation; resolution is not automatic latest-value selection."""
+
+    NONE = 'NONE'
+    RESTATEMENT = 'RESTATEMENT'
+    SUPERSEDED = 'SUPERSEDED'
+    EXTRACTION_ERROR = 'EXTRACTION_ERROR'
+    ROUNDING_EXPLAINED = 'ROUNDING_EXPLAINED'
+    SCOPE_DIFFERENCE = 'SCOPE_DIFFERENCE'
+    PERIOD_DIFFERENCE = 'PERIOD_DIFFERENCE'
+    UNIT_DIFFERENCE = 'UNIT_DIFFERENCE'
+    UNRESOLVED = 'UNRESOLVED'
+
+
+class CriticalTransformation(StrEnum):
+    """Material transformation classification, not a product of pipeline stages."""
+
+    STRUCTURED_DETERMINISTIC = 'STRUCTURED_DETERMINISTIC'
+    TAGGED_IXBRL_DETERMINISTIC = 'TAGGED_IXBRL_DETERMINISTIC'
+    NATIVE_PDF_DETERMINISTIC = 'NATIVE_PDF_DETERMINISTIC'
+    OCR_DETERMINISTIC = 'OCR_DETERMINISTIC'
+    GROUNDED_LLM_SEMANTIC = 'GROUNDED_LLM_SEMANTIC'
+    COMPLEX_LLM_INTERPRETATION = 'COMPLEX_LLM_INTERPRETATION'
+    UNSUPPORTED_LLM_NUMERIC = 'UNSUPPORTED_LLM_NUMERIC'
+
+
+class AdmissibilityReason(StrEnum):
+    """Typed reasons for withholding supported analytical evidence."""
+
+    MISSING_REQUIRED_EVIDENCE = 'MISSING_REQUIRED_EVIDENCE'
+    UNSUPPORTED_LLM_NUMERIC = 'UNSUPPORTED_LLM_NUMERIC'
+    SERIOUS_UNRESOLVED_CONFLICT = 'SERIOUS_UNRESOLVED_CONFLICT'
+    NON_COMPARABLE_PERIOD = 'NON_COMPARABLE_PERIOD'
+    INCOMPATIBLE_SCOPE = 'INCOMPATIBLE_SCOPE'
+    INCOMPATIBLE_UNIT_CURRENCY = 'INCOMPATIBLE_UNIT_CURRENCY'
+    REQUIRED_COMPLETENESS_FAILURE = 'REQUIRED_COMPLETENESS_FAILURE'
+    IDENTITY_FAILURE = 'IDENTITY_FAILURE'
 
 
 class Severity(StrEnum):

@@ -1,11 +1,13 @@
 """Evidence quality result contracts; no S/E/V/C/r computation."""
 
 from decimal import Decimal
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
 from .common import Contract, Text, UnitInterval, UtcTimestamp
+from .enums import ConflictLevel, ConflictResolution, CriticalTransformation, SourceType, ValidationStrength
+from .validation import AdmissionFailure, RuleOutcome, ValidationReport
 
 
 class ReliabilityResult(Contract):
@@ -46,3 +48,77 @@ class ReliabilityResult(Contract):
         if self.hard_fail and self.final_reliability_r != 0:
             raise ValueError("a supplied hard-fail result must have final_reliability_r=0")
         return self
+
+
+class ConflictState(Contract):
+    """Supplied deterministic conflict classification; no conflict discovery here."""
+
+    level: ConflictLevel
+    resolution: ConflictResolution
+    reason: Text
+    evidence_ids: tuple[Text, ...] = ()
+
+    @model_validator(mode='after')
+    def check_resolution(self) -> Self:
+        """Resolved classifications cannot conceal an unresolved penalty or vice versa."""
+        if (self.level != ConflictLevel.NONE) != (self.resolution == ConflictResolution.UNRESOLVED):
+            raise ValueError('Unresolved conflict requires an explicit unresolved level/resolution')
+        if self.resolution not in (ConflictResolution.NONE, ConflictResolution.UNRESOLVED) and not self.evidence_ids:
+            raise ValueError('Resolved conflict requires supporting evidence references')
+        return self
+
+
+class ValidationSupport(Contract):
+    """Selected strength and independently grouped supporting diagnostics."""
+
+    strength: ValidationStrength
+    outcomes: tuple[RuleOutcome, ...]
+    reason: Text
+
+
+class ReliabilityComponents(Contract):
+    """Exact formula inputs, also usable for isolated formula tests."""
+
+    s: UnitInterval
+    e: UnitInterval
+    v: UnitInterval
+    c: UnitInterval
+
+
+class ReliabilityCalculation(Contract):
+    """Pure formula result; failures explicitly withhold supported analytical evidence."""
+
+    components: ReliabilityComponents
+    r_base: UnitInterval
+    r_v: UnitInterval
+    reliability_r: Annotated[UnitInterval, Field(le=Decimal('0.99'))]
+    failures: tuple[AdmissionFailure, ...]
+    policy_version: Literal['m4-reliability-v1'] = 'm4-reliability-v1'
+
+    @property
+    def supported_analytical_evidence(self) -> bool:
+        """A numeric zero accompanying a hard failure is never an admitted fact."""
+        return not self.failures
+
+    @model_validator(mode='after')
+    def check_failure(self) -> Self:
+        """Do not allow a positive reliability alongside an explicit hard exclusion."""
+        if self.failures and self.reliability_r != 0:
+            raise ValueError('Hard failure requires r=0')
+        return self
+
+
+class ReliabilityAssessment(Contract):
+    """Explainable framework result, not a persisted M4.4 ValidatedFact/evidence set."""
+
+    validation: ValidationReport
+    source_type: SourceType
+    critical_transformation: CriticalTransformation
+    transformation_chain: tuple[Text, ...]
+    support: ValidationSupport
+    conflict: ConflictState
+    calculation: ReliabilityCalculation
+    source_reason: Text
+    transformation_reason: Text
+    conflict_reason: Text
+    formula_reason: Text

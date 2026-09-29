@@ -27,7 +27,7 @@ from risk_intelligence.domain import enums
     (enums.ProcessingStatus, "PENDING RUNNING COMPLETE PARTIAL FAILED"),
     (enums.RetrievalStatus, "SUCCESS FAILED"),
     (enums.ValidationType, "SOURCE_CONSISTENCY PERIOD_CONSISTENCY CURRENCY_CONSISTENCY ARITHMETIC CROSS_SOURCE TEMPORAL DUPLICATE"),
-    (enums.ValidationStatus, "PASS WARNING FAIL"),
+    (enums.ValidationStatus, "PASS WARNING FAIL INCONCLUSIVE NOT_APPLICABLE"),
     (enums.Severity, "INFO WARNING FAIL"),
     (enums.NodeType, "INDICATOR DOMAIN OVERALL"),
     (enums.TriggerType, "LIVE REFRESH DEMO_PRECOMPUTE"),
