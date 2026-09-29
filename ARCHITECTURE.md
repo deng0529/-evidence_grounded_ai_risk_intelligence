@@ -66,6 +66,25 @@ not repeated. See the M3 contract for period, missingness and readiness-report r
 ### 2.4 Evidence and validation
 Responsible for determining whether extracted facts can be supported by source evidence.
 
+The authoritative [M4 contract](docs/design-docs/m4-validation-evidence-reliability.md)
+defines admissibility → versioned validation rule registry → conflict
+classification/resolution → S/E/V/C → capped reliability r → persisted
+ValidatedFact / ValidatedEvidenceSet. Availability remains distinct from
+reliability; hard failures retain typed reasons and no supported analytical value.
+Source observations and historical alternatives remain immutable.
+
+Normal M4 execution consumes structured M2/M3 records from Turso. R2 is reserved
+for explicit evidence/conflict investigations or reprocessing, not a routine
+analytical dependency. Preserve transformation chains, critical-transformation
+classification, rule outcomes/independence, resolution lineage, policy/ruleset
+versions and assessment context so results can be explained and reused.
+
+M4 does not redo M3 extraction or semantic normalization, calculate risk variables,
+combine multi-input variable reliability, generate leaf beliefs or perform ER.
+Those responsibilities remain in M5/M6. The current M4 step freezes documentation
+only; the contract records authoritative pre-freeze clarifications and a required
+structured-handoff inspection gate before implementation.
+
 Validation states should include, as appropriate:
 - validated;
 - partially validated;

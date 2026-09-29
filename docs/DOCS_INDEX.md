@@ -11,9 +11,10 @@ For MVP implementation, use the following precedence:
 5. `docs/archive/pre-freeze/` for historical context only; archived files are NOT implementation authority
 
 ## Frozen design specifications
+- `docs/design-docs/m4-validation-evidence-reliability.md` — authoritative M4 admissibility, validation registry, conflicts, S/E/V/C/r, validated facts/evidence sets and reuse; current step is documentation only
 - `docs/design-docs/m3-accounts-financial-ingestion.md` — M3 accounts acquisition, source/canonical facts, reuse and Data Readiness Report contract
 - `docs/design-docs/risk-model-v1.md`
-- `docs/design-docs/evidence-reliability-v1.md` — Evidence Reliability Scheme v1
+- `docs/design-docs/evidence-reliability-v1.md` — formula background; the later M4 contract governs refined M4 classification, independence and stage boundaries
 - `docs/design-docs/er-aggregation-v1.md`
 - `docs/design-docs/data-dictionary-v1.md`
 - `docs/design-docs/system-architecture-v1.md`

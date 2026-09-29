@@ -48,6 +48,22 @@ Expected frozen specifications: - `docs/design-docs/risk-model-v1.md` -
 -   M7 Streamlit UI
 -   M8 Deployment, caching and public demo
 
+## M4 design authority and M4 → M5 interface
+
+The [M4 frozen contract](../design-docs/m4-validation-evidence-reliability.md)
+is authoritative for admissibility, versioned registry rules, conflict resolution
+and explainable evidence reliability. The current step records that design only;
+it does not authorize M4 production code, migrations or live data processing.
+
+M4 persists validated facts and evidence sets with availability, provenance,
+S/E/V/C/r, rule/policy versions and assessment context in Turso. Normal execution
+uses structured M2/M3 records; unchanged evidence/version/context inputs support
+deterministic reuse. M5 consumes those results and owns risk-variable calculation,
+multi-input variable reliability and Reliability-to-Unknown. M4 does none of those
+calculations. Follow the contract's authoritative clarifications for validation
+independence, conservative classification and precision/selection. Inspect the
+structured Turso handoff and report any required minimal extension before implementation.
+
 ## M5 → M6 interface
 
 M5 produces the final Low / High / Unknown belief distribution for each of

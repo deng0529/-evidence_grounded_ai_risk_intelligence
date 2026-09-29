@@ -1,6 +1,13 @@
 # Evidence Reliability Scheme v1
 
-Current formal implementation authority: Evidence Reliability Scheme v1.
+Formula background: Evidence Reliability Scheme v1. The later authoritative
+[M4 frozen contract](m4-validation-evidence-reliability.md) governs M4 execution.
+It refines critical-transformation E classification, independent validation V,
+resolved/unresolved conflict handling and fact/evidence-set outputs. Older route-
+based E tables and rule-count examples below must not override those refinements.
+Unknown conversion and multi-input variable reliability belong to M5; ER belongs
+to M6. Historical tables/examples are retained, not silently rewritten. See the
+M4 contract's repository-review appendix for remaining implementation questions.
 
 Evidence-Grounded AI Risk Intelligence
 MVP Evidence Reliability and Uncertainty Method

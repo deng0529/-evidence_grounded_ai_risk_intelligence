@@ -1,11 +1,21 @@
 # M4 - Validation and Evidence Reliability
 
+The authoritative [M4 frozen design and execution specification](../design-docs/m4-validation-evidence-reliability.md)
+governs this milestone and refines the earlier outline below. Its 35 sections
+define the rule registry, admissibility, explainable S/E/V/C/r, conflict resolution,
+ValidatedFact/ValidatedEvidenceSet, versioning, Turso-first processing and acceptance.
+The current authorized step is documentation only, not production implementation.
+Read its authoritative pre-freeze clarifications and repository-review appendix
+before implementation; inspect the structured Turso handoff and report any required
+minimal extension before implementing it.
+
 ## Objective
 
 Implement deterministic validation and Evidence Reliability Scheme v1.
 
 ## Read before starting
 
+-   `docs/design-docs/m4-validation-evidence-reliability.md` — primary M4 authority
 -   `docs/design-docs/evidence-reliability-v1.md`
 -   `docs/design-docs/data-dictionary-v1.md`
 
