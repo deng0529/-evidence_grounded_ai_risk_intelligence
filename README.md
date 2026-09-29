@@ -8,9 +8,10 @@ An AI-assisted risk intelligence prototype that combines automated document inge
 
 ## Status
 
-M0 foundation is committed. M1 persistence and immutable evidence storage are
-implemented and awaiting human review. No ingestion, scoring engines or UI are
-implemented; M2 has not started.
+M0 and M1 are committed; M1 passed a real Turso/R2 smoke test. M2 implements
+deterministic Companies House API evidence ingestion, resource completeness and
+freshness/reuse. See [M2 notes](docs/implementation/m2-ingestion-notes.md) for its
+explicit live entry point and boundaries. No scoring engines or UI are implemented.
 
 ## Local development (Python 3.12)
 

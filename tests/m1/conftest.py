@@ -15,7 +15,7 @@ from risk_intelligence.persistence.assessment_repository import SqlAssessmentRep
 from risk_intelligence.persistence.company_repository import SqlCompanyRepository
 from risk_intelligence.persistence.connection import Database, open_sqlite
 from risk_intelligence.persistence.evidence_repositories import SqlEvidenceReferenceRepository
-from risk_intelligence.persistence.migrations import migrate
+from risk_intelligence.persistence.migrations import MIGRATIONS_DIRECTORY, migrate
 from risk_intelligence.services.evidence_persistence import EvidencePersistence
 from risk_intelligence.storage.local import LocalStorage
 from risk_intelligence.storage.objects import checksum, object_key
@@ -33,7 +33,10 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def database(tmp_path: Path) -> Iterator[Database]:
     with open_sqlite(tmp_path / "test.sqlite3") as database:
-        migrate(database, applied_at=datetime(2026, 1, 15, tzinfo=UTC))
+        migrations = tmp_path / "m1-migrations"
+        migrations.mkdir()
+        (migrations / "001_storage.sql").write_bytes((MIGRATIONS_DIRECTORY / "001_storage.sql").read_bytes())
+        migrate(database, migrations, applied_at=datetime(2026, 1, 15, tzinfo=UTC))
         yield database
 
 

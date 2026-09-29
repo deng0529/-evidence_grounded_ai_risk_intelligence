@@ -27,6 +27,7 @@ For MVP implementation, use the following precedence:
 - `docs/implementation/M1-storage.md`
 - `docs/implementation/m1-storage-notes.md` — implemented storage usage and boundaries; does not replace frozen specifications
 - `docs/implementation/M2-governance-ingestion.md`
+- `docs/implementation/m2-ingestion-notes.md` - expanded Companies House API scope, compatibility and usage
 - `docs/implementation/M3-accounts-extraction.md`
 - `docs/implementation/M4-validation-reliability.md`
 - `docs/implementation/M5-risk-variable-leaf-belief-engine.md` — M5 — Risk Variable & Leaf Belief Engine

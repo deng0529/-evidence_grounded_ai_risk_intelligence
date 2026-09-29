@@ -1,4 +1,14 @@
-# M2 - Companies House Governance Ingestion
+# M2 - Companies House API Evidence Ingestion
+
+The approved 29 September 2026 M2 execution requirements supersede the older
+governance-only scope below. The implementation covers company-name/number
+resolution, Profile, Officers, PSC, PSC Statements and window-complete Filing
+History with explicit per-resource reuse/completeness/freshness. Charges and
+additional reference-company seeding are excluded. The real closure company is
+PIP & NUT LTD (08624397). See [M2 implementation notes](m2-ingestion-notes.md)
+for current contracts, verification and the M3 boundary.
+
+## Original milestone context
 
 ## Objective
 
