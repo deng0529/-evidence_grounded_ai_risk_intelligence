@@ -1,7 +1,9 @@
 # M3 — Accounts Document & Financial Fact Ingestion
 
-Status: frozen implementation contract under the approved M3 documentation
-request. This document authorizes no production implementation or live calls.
+Status: implementation contract with the approved final M3 semantic-normalization
+and evidence-grounded dynamic-derivation amendment (2026-09-29). Implementation
+and bounded real-data verification are authorized by the associated task; commit
+and push still require separate approval.
 It refines the [M3 milestone](../implementation/M3-accounts-extraction.md),
 preserving the [data dictionary](data-dictionary-v1.md),
 [risk model](risk-model-v1.md), [reliability scheme](evidence-reliability-v1.md)
@@ -81,8 +83,8 @@ not establish that a PDF table is deterministically extractable.
 | Level | Meaning and required lineage |
 | --- | --- |
 | Source Financial Fact | What one identified source location says, without forced canonical classification. Preserve unresolved source concepts. |
-| Canonical Direct Financial Observation | A source fact mapped by an explicit versioned registry entry, with documented unit/sign normalization. |
-| Canonical Derived Financial Observation | An exact deterministic calculation from identified source facts under an approved complete derivation rule. |
+| Canonical Direct Financial Observation | A source fact admitted through a versioned deterministic mapping or evidence/context-verified semantic proposal, with documented unit/sign normalization. |
+| Canonical Derived Financial Observation | An exact deterministic calculation from grounded source operands under a verified accounting relationship and independent completeness evidence. |
 
 For each source fact preserve, where supplied: taxonomy namespace/version and
 concept; original label and raw lexical value; normalized exact Decimal value;
@@ -121,7 +123,7 @@ M3 is not a general financial-statement extraction system.
 | CURRENT_LIABILITIES | Direct current/due-within-one-year liabilities. Generic creditors alone is insufficient. | F2.2 and F2.3 denominator |
 | INVENTORY | Explicit disclosed stocks/inventory value, including explicit zero. Absence never means zero. | F2.3: (CURRENT_ASSETS − INVENTORY) / CURRENT_LIABILITIES |
 | NET_ASSETS | Direct net assets/equity mapping. Net liabilities becomes negative net assets only with explicit taxonomy/sign semantics and a retained normalization rule. | F1.1: NET_ASSETS / TOTAL_ASSETS; F1.2: NET_ASSETS across periods |
-| TOTAL_ASSETS | Direct total assets. “Total assets less current liabilities” is not TOTAL_ASSETS. | F1.1 and F3.1 denominator |
+| TOTAL_ASSETS | Direct total assets, otherwise a verified complete asset-side derivation. “Total assets less current liabilities” is only a possible cross-check. | F1.1 and F3.1 denominator |
 | INTEREST_BEARING_DEBT | Explicit total borrowings/debt with supported interest-bearing scope, or the complete component rule below. Generic creditors is insufficient. | F3.1: INTEREST_BEARING_DEBT / TOTAL_ASSETS |
 
 F2.2 later calculates CURRENT_ASSETS / CURRENT_LIABILITIES. None of these
@@ -132,13 +134,62 @@ explicit normalized labels with required table/context qualifiers, target concep
 allowed unit/period/entity scope and normalization rule. Label normalization may
 standardize whitespace/case; it must not remove semantic qualifiers. Never use
 loose substring guesses such as `"asset" in label`. Unknown taxonomy concepts,
-ambiguous labels or unsupported scopes remain unresolved. New semantic mappings
-require explicit reviewed registry versions and evidence-based fixtures; the
-implementation must not invent equivalences to improve coverage.
+ambiguous labels or unsupported scopes remain unresolved. Deterministic registry
+extensions require reviewed versions and evidence-based fixtures. The hybrid
+semantic route below supports contextual terminology without inventing equivalence.
 
-No CURRENT_ASSETS or TOTAL_ASSETS component derivation is approved by this
-contract. A later proposed complete formula requires explicit approval before
-use. Do not build a general accounting-equation engine.
+### Semantic Concept Normalization — final amendment
+
+Source financial terminology is preserved and normalized to the controlled
+canonical vocabulary using deterministic mappings where reliable and
+evidence-grounded LLM semantic interpretation where terminology or context
+varies. LLM mappings remain subject to evidence/context verification.
+
+Use deterministic mappings first, then optional bounded semantic proposals,
+otherwise unresolved. Preserve source IDs, original label/value/locator, statement
+type, section/hierarchy, scope, date, currency/unit, proposed concept, method,
+rationale, supporting evidence, model/prompt/schema linkage, admission status and
+rejection reason. A model proposal never overwrites a source fact. Verify source
+identity/value, context, scope, period, units and compatibility with known mappings.
+Generic Creditors alone is insufficient; a current-maturity row under an explicit
+Company creditors context may qualify. Ambiguity remains unresolved.
+
+### Evidence-Grounded Dynamic Derivation — final amendment
+
+Financial canonical derivations are evidence-grounded and may be dynamically
+proposed from filing structure. LLMs may interpret financial structure and
+propose derivation plans, but every operand must be grounded in evidence,
+final arithmetic is deterministic, and completeness/admission remains
+controlled.
+
+Priority: supported direct value, safe deterministic structure, grounded LLM plan,
+then unresolved. No universal component list defines TOTAL_ASSETS or debt. Asset
+presentations may use fixed/non-current and current subtotals, or a complete
+non-overlapping component population. The earlier four-component rule is
+superseded as a universal requirement. Missing components are never zero.
+
+Plans retain target, scope/date/unit, ordered source operands and their original
+labels/locators, structured operations, rationale, separate completeness evidence,
+optional cross-checks, proposal method/version and model-artifact linkage. Record
+admission/rejection and the Python-calculated result. Python checks every operand,
+scope/date/unit, duplicate/subtotal overlap, supported operations, accounting
+relationship and completeness before publication. ADD/SUBTRACT/MULTIPLY/DIVIDE
+may be represented as bounded data; operation availability is not authorization
+of an accounting relationship. Reject zero division and unsupported/inexact
+calculations. No arbitrary expressions, symbolic engine or generated Python.
+
+For current implementation, certified asset-side and exhaustive debt populations
+authorize sums; subtraction is also used for supported cross-checks. A model can
+select a grounded plan but cannot invent its independent completeness proof.
+Unrecognized structures remain unresolved rather than weakening this boundary.
+An exposed contradictory cross-check rejects derivation. A direct supported total
+takes priority; independent source conflicts remain retained for M4.
+
+PIP & NUT is an acceptance case, not a branch in application code: Company fixed
+assets subtotal plus current assets may derive TOTAL_ASSETS. Assets less current
+liabilities must not map directly to TOTAL_ASSETS; use it as a cross-check where
+available. Arithmetic agreement alone does not establish completeness, especially
+for an incomplete list of financing items.
 
 ### Complete debt aggregation
 
@@ -158,8 +209,8 @@ never a partial sum labelled total debt. No currency conversion is introduced.
 
 Retain every component source-fact ID, completeness evidence, ordered component
 set, formula, rule version, period and evidence links. Prefer supported direct
-totals; preserve any separately generated discrepant derived observation for M4
-rather than overwriting either. Charges presence does not establish an amount;
+totals; retain rejected or superseded plans and discrepant evidence for M4
+rather than overwriting direct observations. Charges presence does not establish an amount;
 absence of charges never establishes debt = 0. Derived does not automatically
 mean unreliable: reliability is M4's responsibility.
 
@@ -211,8 +262,9 @@ span and source locator, or an explicit unresolved result.
 Before admission, deterministic checks must establish that the cited evidence
 exists in the supplied artifact, the numeric token normalizes exactly to the
 candidate, and row/column, period, entity, scale and unit semantics support that
-association. Finding the same number elsewhere is insufficient. An LLM cannot
-invent a registry mapping or resolve a source conflict. Unsupported candidates
+association. Finding the same number elsewhere is insufficient. An LLM may propose
+a semantic mapping or structured derivation, but cannot modify the registry,
+bypass context/completeness admission or resolve a source conflict. Unsupported candidates
 remain separate from usable values; failed admission records a reason and
 `VALIDATION_FAILED`, without calculating M4 validation strength/reliability.
 An unresolved or malformed extraction is `EXTRACTION_FAILED`. Missing API key or
@@ -520,5 +572,7 @@ No unresolved methodological conflict blocks this contract. Parser/OCR library
 selection, supported exact taxonomy registry entries, explicit operational bounds
 and configured extraction model are implementation configuration choices subject
 to the admission/versioning rules above. Unsupported semantics fail explicitly;
-new derivation formulas or methodological mappings require review. Physical schema
-additions are for the later authorized implementation, preserving existing contracts.
+new accounting admission relationships outside the approved bounded framework
+require review. Within it, grounded structured proposals are explicitly permitted.
+Additive implementation schema changes preserve existing contracts and applied
+migration history.

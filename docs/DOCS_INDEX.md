@@ -30,6 +30,7 @@ For MVP implementation, use the following precedence:
 - `docs/implementation/M2-governance-ingestion.md`
 - `docs/implementation/m2-ingestion-notes.md` - expanded Companies House API scope, compatibility and usage
 - `docs/implementation/M3-accounts-extraction.md`
+- `docs/implementation/m3-ingestion-notes.md` — implemented routes, reuse, operational limits and smoke verification
 - `docs/implementation/M4-validation-reliability.md`
 - `docs/implementation/M5-risk-variable-leaf-belief-engine.md` — M5 — Risk Variable & Leaf Belief Engine
 - `docs/implementation/M6-hierarchical-er-aggregation-engine.md` — M6 — Hierarchical ER Aggregation Engine

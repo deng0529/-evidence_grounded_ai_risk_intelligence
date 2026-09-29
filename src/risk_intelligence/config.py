@@ -27,6 +27,7 @@ class Settings(BaseModel):
     r2_secret_access_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
     companies_house_api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
     openai_api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
+    openai_extraction_model: str | None = None
 
     @model_validator(mode="after")
     def validate_storage_configuration(self) -> Self:
@@ -76,4 +77,5 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             if values.get("COMPANIES_HOUSE_API_KEY") else None
         ),
         "openai_api_key": (SecretStr(values["OPENAI_API_KEY"]) if values.get("OPENAI_API_KEY") else None),
+        "openai_extraction_model": values.get("OPENAI_EXTRACTION_MODEL") or None,
     })

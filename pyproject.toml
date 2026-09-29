@@ -12,6 +12,8 @@ dependencies = [
     "libsql==0.1.11",
     "boto3==1.43.103",
     "botocore==1.43.103",
+    "openai==3.20.0",
+    "pymupdf==1.28.2",
 ]
 
 [project.optional-dependencies]

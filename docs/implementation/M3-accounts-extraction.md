@@ -9,6 +9,13 @@ periods; M4 decides comparability. The primary live acceptance company is PIP & 
 LTD (08624397), with first-run processing, second-run reuse and an 11-variable
 Data Readiness Report. No risk calculations or UI belong to M3.
 
+The approved final amendment adds hybrid semantic normalization and
+evidence-grounded dynamic derivation: deterministic mappings/direct values first,
+then verified structural derivations or bounded LLM proposals, otherwise unresolved.
+Source terminology remains intact; Python verifies operands and calculates, while
+accounting completeness is checked independently. No universal asset/debt component
+list, generated code execution or risk-model expansion is authorized.
+
 ## Original milestone outline (read with the frozen contract above)
 
 ## Objective

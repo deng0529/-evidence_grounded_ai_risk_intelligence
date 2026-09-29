@@ -32,7 +32,7 @@ def test_m1_database_upgrade_preserves_history_and_is_idempotent(tmp_path: Path)
         before=database.query('SELECT * FROM schema_migration ORDER BY version')
         migrate(database)
         assert database.query('SELECT * FROM schema_migration ORDER BY version')==before
-        assert len(before)==2
+        assert len(before)==len(list(MIGRATIONS_DIRECTORY.glob('*.sql')))
         assert not database.query('PRAGMA foreign_key_check')
 
 
