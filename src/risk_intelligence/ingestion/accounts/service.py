@@ -169,7 +169,8 @@ class AccountsIngestion:
         extraction_sha = sha256(result.model_dump_json().encode()).hexdigest()
         with self.database.transaction():
             for fact in result.facts:
-                locator = (PdfLocator(page=fact.page, label=fact.source_label or fact.source_concept)
+                locator = (PdfLocator(page=fact.page, label=fact.source_label or fact.source_concept,
+                                      section=fact.statement_context)
                            if fact.page else IxbrlLocator(concept=fact.source_concept, context_id=fact.context_ref))
                 references.save(fact.evidence_id, EvidenceReference(evidence_id=fact.evidence_id,
                     source_id=source.source_id, document_id=fact.document_id,

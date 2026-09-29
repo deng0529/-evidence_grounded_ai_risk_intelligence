@@ -14,7 +14,7 @@ from .records import insert_immutable, restore
 
 def _source_row(fact: SourceFinancialFact) -> Row:
     row = {name: encode(getattr(fact, name)) for name in type(fact).model_fields
-           if name not in ('period', 'dimensions')}
+           if name not in ('period', 'dimensions', 'statement_context')}
     row['dimensions_json'] = json.dumps(fact.dimensions, separators=(',', ':'))
     row.update({name: encode(getattr(fact.period, name)) for name in type(fact.period).model_fields})
     return row
@@ -50,12 +50,19 @@ class AccountsRepository:
             (fact.document_id, fact.evidence_id))
         if rows != [{'company_number': fact.entity_identifier}]:
             raise IntegrityError('Financial source evidence/document/company mismatch')
+        # Scope context is stored once, in the existing immutable PDF locator.
+        # Reject a caller dropping or replacing it before persisting the source edge.
+        context = self.database.query('SELECT page,section FROM evidence_reference WHERE evidence_id=?',
+                                      (fact.evidence_id,))[0]
+        if context['section'] != fact.statement_context or context['page'] != fact.page:
+            raise IntegrityError('Financial source statement context/locator mismatch')
         with self.database.transaction():
             insert_immutable(self.database, 'financial_source_fact', 'source_fact_id', _source_row(fact))
 
     def get_source(self, source_fact_id: str) -> SourceFinancialFact | None:
-        """Restore exact source financial values and context, or return None."""
-        rows = self.database.query('SELECT * FROM financial_source_fact WHERE source_fact_id=?', (source_fact_id,))
+        """Restore values and heading provenance from SQL only; old context stays absent."""
+        rows = self.database.query('SELECT f.*,e.section AS statement_context FROM financial_source_fact f '
+            'JOIN evidence_reference e ON e.evidence_id=f.evidence_id WHERE f.source_fact_id=?', (source_fact_id,))
         return restore(_source_fact, rows[0]) if rows else None
 
     def filings(self, company_id: str) -> tuple[FilingInput, ...]:

@@ -11,8 +11,9 @@ from risk_intelligence.domain.facts import ReportingPeriod
 from risk_intelligence.ingestion.companies_house.client import ParseError
 from .models import ExtractionResult, SourceFinancialFact, DebtSchedule
 from .derivation import COMPONENT_LABELS, COMPLETENESS_QUOTE
+from .scope import STATEMENT_HEADING
 
-PARSER_VERSION = 'pdf-table-v3'
+PARSER_VERSION = 'pdf-table-v4'
 LABELS = {
     'current assets': 'CURRENT_ASSETS',
     'total current assets': 'CURRENT_ASSETS',
@@ -93,6 +94,19 @@ def rows(page: PageText) -> tuple[tuple[Word, ...], ...]:
             result.append([])
         result[-1].append(word)
     return tuple(tuple(sorted(row, key=lambda w: w.x)) for row in result)
+
+
+def statement_context(page: PageText, before_y: float) -> str | None:
+    """Retain preceding statement headings verbatim in layout order for a PDF row.
+
+    The evidence page and these quotes locate the context. Competing headings
+    are retained, not selected by proximity or converted into Company scope.
+    """
+    headings = [' '.join(word.text for word in row) for row in rows(page)
+                if row[0].y < before_y]
+    headings = [heading for heading in headings
+                if STATEMENT_HEADING.fullmatch(' '.join(heading.split()))]
+    return '\n'.join(headings) or None
 
 
 def amount(token: str, scale: int = 0) -> Decimal:
@@ -201,7 +215,8 @@ def extract_pdf(pages: tuple[PageText, ...], document_id: str, company_number: s
                     dimensions=dimensions,
                     period_role='CURRENT' if int(column.text) == latest else 'COMPARATIVE',
                     scale=scale, sign='-' if value < 0 else '+', extraction_method=page.method,
-                    parser_version=PARSER_VERSION, page=page.page))
+                    parser_version=PARSER_VERSION, page=page.page,
+                    statement_context=statement_context(page, headers[0][0].y)))
         if debt_table:
             for column in columns:
                 components = tuple(f.source_fact_id for f in facts if f.page == page.page

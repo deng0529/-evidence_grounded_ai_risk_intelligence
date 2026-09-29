@@ -9,9 +9,9 @@ from risk_intelligence.ingestion.companies_house.client import ParseError
 from .derivation import derive_debt
 from .fallback import _columns, page_lines
 from .models import CompletenessProof, ExtractionResult, FinancialContext, SourceFinancialFact
-from .pdf import PageText, Word, amount, rows
+from .pdf import PageText, Word, amount, rows, statement_context
 
-PARSER_VERSION = 'financial-statement-structure-v3'
+PARSER_VERSION = 'financial-statement-structure-v4'
 FIXED_LABELS = {'intangible assets', 'intangible fixed assets', 'tangible assets',
                 'tangible fixed assets', 'investments', 'other fixed assets'}
 CURRENT_CHILDREN = {'stocks', 'inventory', 'inventories', 'debtors',
@@ -40,7 +40,9 @@ def _source(anchor: SourceFinancialFact, page: PageText, index: int, label: str,
         'source_concept':'structure:'+concept, 'source_label':label,
         'raw_value':raw, 'value':value, 'sign':'-' if value < 0 else '+',
         'context_ref':f'page-{page.page}:row-{index+1}:{anchor.period.period_end}',
-        'parser_version':PARSER_VERSION, 'extraction_method':page.method, 'page':page.page}))
+        'parser_version':PARSER_VERSION, 'extraction_method':page.method, 'page':page.page,
+        # A component may come from another page: never inherit the anchor's heading.
+        'statement_context':statement_context(page, row[0].y)}))
 
 
 def inspect_asset_side(pages: tuple[PageText, ...], result: ExtractionResult) -> ExtractionResult:

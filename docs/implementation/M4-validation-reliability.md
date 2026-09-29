@@ -7,6 +7,9 @@ ValidatedFact/ValidatedEvidenceSet, versioning, Turso-first processing and accep
 M4.0 inspection and the M4.0a semantic-support handoff are complete. M4.1 adds
 the reusable in-memory framework and frozen policies described below; domain
 rules and final persistence/integration remain later steps.
+The bounded [M4.2a-0 source-scope handoff](M4.2a-0-source-scope.md) preserves
+deterministic PDF heading provenance in existing SQL evidence locators before
+financial validation rules are implemented.
 Read its authoritative pre-freeze clarifications and repository-review appendix
 before implementation; inspect the structured Turso handoff and report any required
 minimal extension before implementing it.

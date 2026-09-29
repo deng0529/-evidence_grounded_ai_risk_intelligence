@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from risk_intelligence.domain.common import Contract, ExactDecimal, Text
 from risk_intelligence.domain.enums import AvailabilityStatus, ExtractionMethod
 from risk_intelligence.domain.facts import ReportingPeriod
+from .scope import SourceScope, source_scope
 
 CanonicalConcept = Literal[
     "CURRENT_ASSETS", "CURRENT_LIABILITIES", "INVENTORY", "NET_ASSETS",
@@ -51,10 +52,27 @@ class SourceFinancialFact(Contract):
     extraction_method: ExtractionMethod
     parser_version: Text
     page: int | None = Field(default=None, ge=1)
+    statement_context: Text | None = None
+
+    @property
+    def source_scope(self) -> SourceScope:
+        """Expose source scope without deriving it from admission or a concept.
+
+        Legacy v3 Group dimensions were explicit parser output. Their absence
+        never establishes Company scope. Conflicting retained metadata remains
+        unresolved rather than selecting whichever assertion is convenient.
+        """
+        group_dimension = ('pdf:entity-scope', 'GROUP') in self.dimensions
+        if self.parser_version == 'pdf-table-v3' and self.statement_context is None and group_dimension:
+            return 'GROUP'
+        scope = source_scope(self.statement_context, self.parser_version)
+        return 'UNRESOLVED' if group_dimension and scope != 'GROUP' else scope
 
     @model_validator(mode="after")
     def check_available_value(self) -> Self:
         """Keep source missingness explicit without making M4 judgments."""
+        if self.statement_context is not None and self.page is None:
+            raise ValueError('Statement heading context requires a PDF page locator')
         if self.availability_status in (AvailabilityStatus.AVAILABLE, AvailabilityStatus.NON_COMPARABLE):
             if self.value is None or not self.currency or not self.unit:
                 raise ValueError("An available financial source fact requires value and currency/unit")
