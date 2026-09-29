@@ -1,5 +1,16 @@
 # M3 - Accounts Acquisition and Financial Extraction
 
+The [frozen M3 implementation contract](../design-docs/m3-accounts-financial-ingestion.md)
+refines the original milestone outline below and governs implementation acceptance.
+Follow existing M2 document-metadata links; do not independently rediscover filings.
+Retain source facts separately from six canonical observations, with versioned
+mapping/derivation and processing reuse. Gather up to three potentially relevant
+periods; M4 decides comparability. The primary live acceptance company is PIP & NUT
+LTD (08624397), with first-run processing, second-run reuse and an 11-variable
+Data Readiness Report. No risk calculations or UI belong to M3.
+
+## Original milestone outline (read with the frozen contract above)
+
 ## Objective
 
 Acquire filed accounts and produce canonical financial facts for the MVP

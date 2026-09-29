@@ -19,6 +19,7 @@ These standards apply repository-wide to M1–M8 and later maintenance unless a 
 - Use stable external web/API interfaces, record source metadata and respect source terms and project policy. Do not depend on undocumented behaviour or commit raw confidential or personal data.
 
 ## Architecture and side effects
+- For accounts ingestion, follow `docs/design-docs/m3-accounts-financial-ingestion.md`: enter through M2 document-metadata links, publish/verify evidence through the M1 coordinator, separate source facts from canonical observations, and reuse artifacts by inputs and explicit versions. M3 ends before comparability decisions, reliability, risk and ER; its verification report shows input readiness only. Do not repeat OCR/LLM processing for a complete unchanged fingerprint or silently expand controlled mappings/derivations.
 - Keep responsibilities distinct: Source/Evidence → Structured Facts → Validation → Evidence Reliability → Risk Variables/Leaf Beliefs → ER Aggregation → Assessment/Explanation → UI. Keep ingestion, extraction and database access modular; evidence reliability is separate from ER importance weights.
 - Give modules clear responsibilities. Avoid monolithic files, hidden coupling, circular dependencies, unnecessary global state and hidden side effects.
 - Separate presentation and application orchestration from domain logic. Streamlit calls application/service boundaries; it must not contain ingestion, validation, reliability, risk or ER business logic.

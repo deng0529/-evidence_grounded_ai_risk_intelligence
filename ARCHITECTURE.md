@@ -46,6 +46,23 @@ Possible approaches:
 
 Extraction output must retain provenance.
 
+#### M3 accounts ingestion boundary
+
+The frozen [M3 contract](docs/design-docs/m3-accounts-financial-ingestion.md)
+starts from M2 accounts filing/document-metadata links and ends at six canonical
+financial observations plus source facts, provenance and processing metadata.
+Prefer verified semantic machine-readable extraction, then layout-aware native
+PDF, OCR with deterministic extraction, and optional grounded LLM fallback.
+Source facts remain separate from direct/derived canonical observations; M3
+does not calculate financial ratios, reliability, risk or ER.
+
+M1 `EvidencePersistence` owns object publication and readback/checksum verification
+before parsing and structured persistence. SQL repositories own relational data;
+`EvidenceStorage` owns bytes. R2 remains immutable evidence, while Turso supplies
+normal downstream analytical execution. Fingerprints and explicit versions govern
+raw, source-fact, OCR/LLM and canonical reuse; unchanged successful processing is
+not repeated. See the M3 contract for period, missingness and readiness-report rules.
+
 ### 2.4 Evidence and validation
 Responsible for determining whether extracted facts can be supported by source evidence.
 
@@ -92,6 +109,13 @@ The interface and existing persistence contracts are described in
 `docs/implementation/roadmap-v1.md`.
 
 Risk calculations should be inspectable and versioned where practical.
+
+Later M4–M6 results are immutable versioned assessment snapshots in Turso.
+Repeated company queries reuse valid snapshots when evidence, analytical versions,
+assessment-date inputs and freshness permit. A required M2 freshness check does
+not itself mandate recomputation; changed inputs invalidate only dependent stages.
+Preserve previous snapshots. This is a downstream architectural requirement,
+not assessment-cache or risk-engine implementation within M3.
 
 ### 2.7 Explanation layer
 Responsible for turning validated indicators and evidence into user-readable explanations.
