@@ -140,6 +140,15 @@ class FinancialContext(Contract):
     compatible_concepts: tuple[CanonicalConcept, ...] = ()
 
 
+class SemanticSupport(Contract):
+    """SQL-only contextual support for one accepted semantic interpretation."""
+
+    interpretation_id: Text
+    schema_version: Literal['financial-semantic-support-v1'] = 'financial-semantic-support-v1'
+    rationale: Text
+    context: FinancialContext
+
+
 class GroundedOperand(Contract):
     """Untrusted copied source operand; admission compares every field to its source."""
 

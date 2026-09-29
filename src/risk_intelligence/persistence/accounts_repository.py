@@ -5,7 +5,7 @@ import json
 from risk_intelligence.domain.enums import AvailabilityStatus, ComparabilityStatus, ExtractionMethod, PeriodType
 from risk_intelligence.domain.facts import FinancialFact, ReportingPeriod
 from risk_intelligence.ingestion.accounts.models import SourceFinancialFact
-from risk_intelligence.ingestion.accounts.models import FilingInput, InterpretationDecision
+from risk_intelligence.ingestion.accounts.models import FilingInput, InterpretationDecision, FinancialContext, SemanticSupport
 from .connection import Database, IntegrityError, Row
 from .fact_repositories import SqlFinancialFactRepository
 from .mapping import date_value, decimal_value, encode, text
@@ -90,11 +90,14 @@ class AccountsRepository:
         return text(rows[0]['raw_evidence_id']) if rows else None
 
     def save_interpretation(self, document_id: str, artifact_id: str,
-                            decision: 'InterpretationDecision', canonical_id: str | None) -> None:
-        """Retain queryable immutable admission with the full R2 proposal artifact.
+                            decision: 'InterpretationDecision', canonical_id: str | None,
+                            context: FinancialContext | None = None) -> None:
+        """Atomically retain admission and required accepted semantic support.
 
         Rejected unknown source IDs stay in the artifact, not fabricated SQL edges.
         The existing processing ledger must link that artifact to this document.
+        Accepted semantic normalization requires its uniquely selected context;
+        other interpretation methods retain their existing publication behavior.
         """
         from hashlib import sha256
         proposal = decision.proposal
@@ -106,12 +109,46 @@ class AccountsRepository:
         if source_id and self.get_source(source_id) is None:
             source_id = None
         identity = sha256((artifact_id+decision.model_dump_json()).encode()).hexdigest()
-        insert_immutable(self.database, 'financial_interpretation', 'interpretation_id', {
+        row = {
             'interpretation_id':identity, 'document_id':document_id, 'source_fact_id':source_id,
             'canonical_fact_id':canonical_id,'artifact_raw_id':artifact_id,
             'llm_artifact_raw_id':decision.llm_artifact_id,'target_concept':proposal.target,
             'period_end':proposal.period_end.isoformat(),'method':proposal.method,'status':decision.status,
-            'rule_version':proposal.version,'reason':decision.reason})
+            'rule_version':proposal.version,'reason':decision.reason}
+        with self.database.transaction():
+            insert_immutable(self.database, 'financial_interpretation', 'interpretation_id', row)
+            if decision.status == 'AVAILABLE' and proposal.method == 'LLM_SEMANTIC':
+                if context is None:
+                    raise IntegrityError('Accepted semantic normalization requires source context')
+                self.save_semantic_support(SemanticSupport(interpretation_id=identity,
+                    rationale=proposal.rationale, context=context))
+
+    def get_semantic_support(self, interpretation_id: str) -> SemanticSupport | None:
+        """Read validated contextual support from SQL only; None means not published."""
+        rows = self.database.query('SELECT * FROM financial_semantic_support WHERE interpretation_id=?',
+                                   (interpretation_id,))
+        def decode(row: Row) -> SemanticSupport:
+            return SemanticSupport(interpretation_id=row['interpretation_id'],
+                schema_version=row['schema_version'], rationale=row['rationale'],
+                context=FinancialContext.model_validate_json(row['context_json']))
+        return restore(decode, rows[0]) if rows else None
+
+    def save_semantic_support(self, support: SemanticSupport) -> bool:
+        """Append matching accepted support, accepting exact retries and rejecting conflicts."""
+        support = SemanticSupport.model_validate(support.model_dump())
+        with self.database.transaction():
+            rows = self.database.query('SELECT * FROM financial_interpretation WHERE interpretation_id=?',
+                                       (support.interpretation_id,))
+            if (not rows or rows[0]['status'] != 'AVAILABLE' or rows[0]['method'] != 'LLM_SEMANTIC'
+                    or rows[0]['source_fact_id'] != support.context.source_fact_id
+                    or rows[0]['target_concept'] not in support.context.compatible_concepts):
+                raise IntegrityError('Semantic context does not match accepted interpretation')
+            source = self.get_source(support.context.source_fact_id)
+            if source is None or source.document_id != rows[0]['document_id']:
+                raise IntegrityError('Semantic support source/document mismatch')
+            return insert_immutable(self.database, 'financial_semantic_support', 'interpretation_id', {
+                'interpretation_id':support.interpretation_id, 'schema_version':support.schema_version,
+                'rationale':support.rationale, 'context_json':support.context.model_dump_json()})
 
     def save_direct(self, fact: FinancialFact, source_fact_id: str, mapping_version: str) -> None:
         """Publish direct canonical observation and immutable source edge atomically."""

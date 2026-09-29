@@ -218,8 +218,11 @@ class AccountsIngestion:
                         output_ids.append(admitted.financial_fact_id)
                     present.add((admitted.canonical_concept,admitted.period.model_dump_json()))
                 if result.interpretation_artifact_id:
+                    contexts = [c for c in result.contexts if proposal.operands
+                                and c.source_fact_id == proposal.operands[0].source_fact_id]
                     self.repository.save_interpretation(raw.document_id,result.interpretation_artifact_id,
-                        decision,admitted.financial_fact_id if admitted else None)
+                        decision,admitted.financial_fact_id if admitted else None,
+                        contexts[0] if len(contexts) == 1 else None)
             for period in result.periods:
                 for concept in CONCEPTS:
                     if (concept, period.model_dump_json()) in present:
