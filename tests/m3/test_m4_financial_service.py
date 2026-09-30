@@ -218,6 +218,7 @@ def test_sql_pdf_fact_reaches_immutable_validated_fact(
         assert stored.fact_id == "f"
         assert stored.company_number == COMPANY_NUMBER
         assert stored.canonical_concept == "NET_ASSETS"
+        assert stored.analytical_scope == "COMPANY"
         assert stored.value_numeric == Decimal("100")
         assert stored.currency == "GBP"
         assert stored.unit == "GBP"

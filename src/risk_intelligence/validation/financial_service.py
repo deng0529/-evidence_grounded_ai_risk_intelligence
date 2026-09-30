@@ -403,6 +403,7 @@ class FinancialValidationService:
             processing_run_id=fact.processing_run_id,
             assessment_date=assessment_date,
             canonical_concept=fact.canonical_concept,
+            analytical_scope=analytical_scope,
             availability_status=fact.availability_status,
             provenance_type=str(lineage["origin"]),
             normalization_method=str(lineage["mapping_version"]),

@@ -96,7 +96,7 @@ def _governance_assessment(database, storage, api):
     return result, records, assessment
 
 
-def test_migration_008_is_applied(database) -> None:
+def test_migration_009_is_applied(database) -> None:
     rows = database.query(
         """
         SELECT version, name
@@ -106,8 +106,8 @@ def test_migration_008_is_applied(database) -> None:
     )
 
     assert rows[-1] == {
-        "version": 8,
-        "name": "008_validated_analytical_evidence.sql",
+        "version": 9,
+        "name": "009_validated_fact_analytical_scope.sql",
     }
 
 

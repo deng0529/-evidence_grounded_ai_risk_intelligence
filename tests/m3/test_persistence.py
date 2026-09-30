@@ -34,7 +34,7 @@ def test_upgrade_from_m2_retains_ledger_and_has_no_fk_errors(tmp_path: Path, dri
         assert db.query('SELECT * FROM schema_migration ORDER BY version')[:2] == before
         assert db.query('SELECT version FROM schema_migration ORDER BY version') == [
             {'version': 1}, {'version': 2}, {'version': 3}, {'version': 4},
-            {'version': 5}, {'version': 6}, {'version': 7}, {'version': 8}]
+            {'version': 5}, {'version': 6}, {'version': 7}, {'version': 8}, {'version': 9}]
         migrate(db)
         assert db.query('PRAGMA foreign_key_check') == []
 

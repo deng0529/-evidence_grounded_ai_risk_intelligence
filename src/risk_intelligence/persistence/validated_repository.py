@@ -26,6 +26,7 @@ class PersistedValidatedFact:
     processing_run_id: str
     assessment_date: date
     canonical_concept: str
+    analytical_scope: str | None
     value_numeric: Decimal | None
     currency: str | None
     unit: str | None
@@ -127,6 +128,7 @@ class ValidatedEvidenceRepository:
         processing_run_id: str,
         assessment_date: date,
         canonical_concept: str,
+        analytical_scope: str,
         availability_status: AvailabilityStatus,
         provenance_type: str,
         normalization_method: str | None,
@@ -135,6 +137,14 @@ class ValidatedEvidenceRepository:
     ) -> None:
         if provenance_type not in ("DIRECT", "DERIVED"):
             raise ValueError("Unsupported validated fact provenance type")
+
+        if analytical_scope not in (
+            "COMPANY",
+            "GROUP",
+            "UNRESOLVED",
+            "UNSPECIFIED",
+        ):
+            raise ValueError("Unsupported financial analytical scope")
 
         with self.database.transaction():
             fact = self.database.query(
@@ -189,6 +199,7 @@ class ValidatedEvidenceRepository:
                 "processing_run_id": processing_run_id,
                 "assessment_date": assessment_date.isoformat(),
                 "canonical_concept": canonical_concept,
+                "analytical_scope": analytical_scope,
                 "value_numeric": source["value_numeric"],
                 "currency": source["currency"],
                 "unit": source["unit"],
@@ -241,6 +252,11 @@ class ValidatedEvidenceRepository:
             processing_run_id=str(row["processing_run_id"]),
             assessment_date=date.fromisoformat(str(row["assessment_date"])),
             canonical_concept=str(row["canonical_concept"]),
+            analytical_scope=(
+                str(row["analytical_scope"])
+                if row["analytical_scope"] is not None
+                else None
+            ),
             value_numeric=(
                 Decimal(str(row["value_numeric"]))
                 if row["value_numeric"] is not None
