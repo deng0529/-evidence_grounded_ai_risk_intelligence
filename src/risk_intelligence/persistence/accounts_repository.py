@@ -4,7 +4,7 @@ import json
 
 from risk_intelligence.domain.enums import AvailabilityStatus, ComparabilityStatus, ExtractionMethod, PeriodType
 from risk_intelligence.domain.facts import FinancialFact, ReportingPeriod
-from risk_intelligence.ingestion.accounts.models import SourceFinancialFact
+from risk_intelligence.ingestion.accounts.models import SourceFinancialFact, CompletenessProof
 from risk_intelligence.ingestion.accounts.models import FilingInput, InterpretationDecision, FinancialContext, SemanticSupport
 from .connection import Database, IntegrityError, Row
 from .fact_repositories import SqlFinancialFactRepository
@@ -205,3 +205,152 @@ class AccountsRepository:
                     'WHERE fact_id=? ORDER BY position', (fact.financial_fact_id,)) != [
                         {'source_fact_id': identity} for identity in component_ids]:
                 raise IntegrityError('Immutable derived component links differ')
+
+    def get_observation_lineage(
+            self, fact_id: str
+    ) -> tuple[dict[str, object], tuple[SourceFinancialFact, ...]] | None:
+        """Restore canonical lineage and ordered source components from SQL only."""
+        rows = self.database.query(
+            'SELECT origin,mapping_version,derivation_version,derivation_rule '
+            'FROM financial_observation_lineage WHERE fact_id=?',
+            (fact_id,))
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise IntegrityError('Multiple lineage rows for canonical fact')
+
+        component_rows = self.database.query(
+            'SELECT source_fact_id FROM financial_observation_component '
+            'WHERE fact_id=? ORDER BY position',
+            (fact_id,))
+        components = tuple(
+            self.get_source(text(row['source_fact_id']))
+            for row in component_rows)
+        if any(component is None for component in components):
+            raise IntegrityError('Canonical lineage references missing source fact')
+
+        return rows[0], components
+
+    def get_derivation_proof(self, fact_id: str) -> CompletenessProof | None:
+        """Restore completeness proof and ordered cross-check edges from SQL only."""
+        rows = self.database.query(
+            'SELECT * FROM financial_derivation_proof WHERE fact_id=?',
+            (fact_id,))
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise IntegrityError('Multiple derivation proofs for canonical fact')
+
+        row = rows[0]
+        components = self.database.query(
+            'SELECT source_fact_id FROM financial_observation_component '
+            'WHERE fact_id=? ORDER BY position',
+            (fact_id,))
+        checks = self.database.query(
+            'SELECT source_fact_id FROM financial_derivation_cross_check '
+            'WHERE fact_id=? ORDER BY position',
+            (fact_id,))
+
+        return CompletenessProof(
+            proof_id=text(row['proof_id']),
+            target=text(row['target_concept']),
+            source_fact_ids=tuple(
+                text(item['source_fact_id']) for item in components),
+            document_id=text(row['document_id']),
+            page=row['page'],
+            row_start=row['row_start'],
+            row_end=row['row_end'],
+            evidence_text=text(row['evidence_text']),
+            relationship=text(row['relationship']),
+            cross_check_ids=tuple(
+                text(item['source_fact_id']) for item in checks),
+        )
+
+    def save_derivation_proof(self, fact: FinancialFact, proof: CompletenessProof) -> None:
+        """Publish completeness semantics and independent cross-check edges to SQL."""
+        proof = CompletenessProof.model_validate(proof)
+
+        lineage = self.database.query(
+            'SELECT origin FROM financial_observation_lineage WHERE fact_id=?',
+            (fact.financial_fact_id,))
+        if lineage != [{'origin': 'DERIVED'}] or proof.document_id != fact.document_id:
+            raise IntegrityError('Derivation proof does not match derived fact')
+
+        expected = {
+            'TOTAL_ASSETS': 'ASSET_SIDE',
+            'INTEREST_BEARING_DEBT': 'EXHAUSTIVE_INTEREST_BEARING',
+        }.get(fact.canonical_concept)
+
+        if (expected is None
+                or proof.target != fact.canonical_concept
+                or proof.relationship != expected):
+            raise IntegrityError('Derivation proof target/relationship mismatch')
+
+        components = self.database.query(
+            'SELECT source_fact_id FROM financial_observation_component '
+            'WHERE fact_id=? ORDER BY position',
+            (fact.financial_fact_id,))
+        if components != [
+                {'source_fact_id': identity}
+                for identity in proof.source_fact_ids]:
+            raise IntegrityError(
+                'Derivation proof population differs from persisted components')
+
+        evidence = self.database.query(
+            'SELECT document_id,source_id FROM evidence_reference '
+            'WHERE evidence_id=?',
+            (proof.proof_id,))
+        if evidence != [{
+                'document_id': fact.document_id,
+                'source_id': fact.source_id,
+        }]:
+            raise IntegrityError(
+                'Derivation proof evidence differs from source document')
+
+        checks = [
+            self.get_source(identity)
+            for identity in proof.cross_check_ids
+        ]
+        if any(
+                source is None
+                or source.document_id != fact.document_id
+                or source.entity_identifier != fact.company_number
+                for source in checks):
+            raise IntegrityError(
+                'Derivation cross-check source/document/company mismatch')
+
+        with self.database.transaction():
+            inserted = insert_immutable(
+                self.database,
+                'financial_derivation_proof',
+                'fact_id',
+                {
+                    'fact_id': fact.financial_fact_id,
+                    'proof_id': proof.proof_id,
+                    'document_id': proof.document_id,
+                    'target_concept': proof.target,
+                    'relationship': proof.relationship,
+                    'page': proof.page,
+                    'row_start': proof.row_start,
+                    'row_end': proof.row_end,
+                    'evidence_text': proof.evidence_text,
+                })
+
+            expected_rows = [
+                {'source_fact_id': identity}
+                for identity in proof.cross_check_ids
+            ]
+
+            if inserted:
+                for position, identity in enumerate(proof.cross_check_ids):
+                    self.database.execute(
+                        'INSERT INTO financial_derivation_cross_check '
+                        'VALUES (?,?,?)',
+                        (fact.financial_fact_id, identity, position))
+            elif self.database.query(
+                    'SELECT source_fact_id '
+                    'FROM financial_derivation_cross_check '
+                    'WHERE fact_id=? ORDER BY position',
+                    (fact.financial_fact_id,)) != expected_rows:
+                raise IntegrityError(
+                    'Immutable derivation cross-check links differ')

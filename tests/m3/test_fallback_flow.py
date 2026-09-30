@@ -171,6 +171,40 @@ def test_derived_asset_and_debt_lineage_persist_with_rule_and_order(fallback_con
         components = service.database.query('SELECT source_fact_id FROM financial_observation_component WHERE fact_id=? ORDER BY position',(row['fact_id'],))
         assert tuple(item['source_fact_id'] for item in components) == proof.source_fact_ids
         assert proof.proof_id in service.repository.canonical.get(row['fact_id']).evidence_ids
+
+        persisted_proof = service.database.query(
+            'SELECT proof_id,document_id,target_concept,relationship,page,row_start,row_end,evidence_text '
+            'FROM financial_derivation_proof WHERE fact_id=?',
+            (row['fact_id'],))
+        assert persisted_proof == [{
+            'proof_id': proof.proof_id,
+            'document_id': proof.document_id,
+            'target_concept': proof.target,
+            'relationship': proof.relationship,
+            'page': proof.page,
+            'row_start': proof.row_start,
+            'row_end': proof.row_end,
+            'evidence_text': proof.evidence_text,
+        }]
+
+        persisted_checks = service.database.query(
+            'SELECT source_fact_id FROM financial_derivation_cross_check '
+            'WHERE fact_id=? ORDER BY position',
+            (row['fact_id'],))
+        assert tuple(item['source_fact_id'] for item in persisted_checks) == proof.cross_check_ids
+
+        restored_proof = service.repository.get_derivation_proof(row['fact_id'])
+        assert restored_proof == proof
+
+        restored_lineage = service.repository.get_observation_lineage(row['fact_id'])
+        assert restored_lineage is not None
+        lineage, restored_components = restored_lineage
+        assert lineage['origin'] == 'DERIVED'
+        assert lineage['mapping_version'] == service.registry.version
+        assert lineage['derivation_version'] == VERSION
+        assert tuple(
+            component.source_fact_id for component in restored_components
+        ) == proof.source_fact_ids
     base = result.facts[0]
     debt = tuple(base.model_copy(update={'source_fact_id':f'debt-{i}','evidence_id':f'debt-e-{i}',
         'source_concept':'pdf-component:'+label,'source_label':label,'value':Decimal(value),'raw_value':value})

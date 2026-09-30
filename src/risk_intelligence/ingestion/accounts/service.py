@@ -216,6 +216,7 @@ class AccountsIngestion:
                             components = tuple(o.source_fact_id for o in proposal.operands)
                             self.repository.save_derived(admitted,components,self.registry.version,INTERPRETATION_VERSION,
                                 proposal.model_dump_json(),admitted.evidence_ids[len(components):])
+                            self.repository.save_derivation_proof(admitted, proof)
                         output_ids.append(admitted.financial_fact_id)
                     present.add((admitted.canonical_concept,admitted.period.model_dump_json()))
                 if result.interpretation_artifact_id:
