@@ -11,6 +11,7 @@ For MVP implementation, use the following precedence:
 5. `docs/archive/pre-freeze/` for historical context only; archived files are NOT implementation authority
 
 ## Frozen design specifications
+- `docs/design-docs/m5-risk-variable-leaf-belief.md` — authoritative M5 operational policies; approved additive validated deadline/obligation handoff
 - `docs/design-docs/m4-validation-evidence-reliability.md` — authoritative M4 admissibility, validation registry, conflicts, S/E/V/C/r, validated facts/evidence sets and reuse; current step is documentation only
 - `docs/design-docs/m3-accounts-financial-ingestion.md` — M3 accounts acquisition, source/canonical facts, reuse and Data Readiness Report contract
 - `docs/design-docs/risk-model-v1.md`

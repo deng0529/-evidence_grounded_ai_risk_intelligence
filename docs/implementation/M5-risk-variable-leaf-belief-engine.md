@@ -11,6 +11,7 @@ M5 does not recalculate M4 evidence reliability.
 
 ## Read before starting
 
+- `docs/design-docs/m5-risk-variable-leaf-belief.md` — approved operational policies and the approved additive validated-obligation handoff
 - `docs/design-docs/risk-model-v1.md`
 - `docs/design-docs/evidence-reliability-v1.md`
 - `docs/design-docs/er-aggregation-v1.md` (leaf construction and invariants)

@@ -105,7 +105,7 @@ def test_migration_009_is_applied(database) -> None:
         """
     )
 
-    assert rows[-1] == {
+    assert rows[8] == {
         "version": 9,
         "name": "009_validated_fact_analytical_scope.sql",
     }
