@@ -32,7 +32,7 @@ from risk_intelligence.validation.governance_handoff import (
 )
 from risk_intelligence.validation.policy import assess_reliability
 
-from conftest import FakeAPI, NOW, NUMBER
+from tests.m2.conftest import FakeAPI, NOW, NUMBER
 
 
 WINDOW36 = date(2023, 9, 29)
@@ -281,3 +281,87 @@ def test_incomplete_resource_hard_failure_forces_reliability_zero(
 
     assert assessment.calculation.reliability_r == Decimal('0')
     assert not assessment.calculation.supported_analytical_evidence
+
+def test_governance_service_persists_validated_evidence_set(
+    database: Database,
+    storage: LocalStorage,
+    api: FakeAPI,
+) -> None:
+    """Real M2 SQL evidence reaches immutable M4 governance handoff."""
+    from risk_intelligence.domain.enums import ValidationStatus
+    from risk_intelligence.validation.governance_service import (
+        GovernanceValidationService,
+    )
+
+    ingest(database, storage, api, "first")
+
+    service = GovernanceValidationService(database)
+
+    result = service.evaluate_and_persist(
+        validated_evidence_set_id="validated-officers",
+        processing_run_id="first",
+        input_id="officers",
+        input_type=OFFICER_EVENTS_24M,
+        company_number=NUMBER,
+        assessment_date=NOW.date(),
+        window_start=WINDOW24,
+        resources=(Resource.OFFICERS,),
+    )
+
+    stored = service.validated.get_evidence_set(
+        "validated-officers"
+    )
+
+    assert result.assessment.validation.admissible
+    assert stored is not None
+
+    assert stored.company_number == NUMBER
+    assert stored.processing_run_id == "first"
+    assert stored.evidence_set_type == OFFICER_EVENTS_24M
+    assert stored.analytical_window_start == WINDOW24
+    assert stored.analytical_window_end == NOW.date()
+
+    assert stored.source_resources == ("officers",)
+    assert len(stored.snapshot_ids) == 1
+    assert (
+        stored.snapshot_ids[0]
+        == result.evidence_set.snapshots[0].snapshot_id
+    )
+
+    assert stored.validation_status == ValidationStatus.PASS
+    assert (
+        stored.validation_ruleset_version
+        == "governance-validation-v1"
+    )
+    assert stored.reliability_policy_version == "m4-reliability-v1"
+
+    # Companies House API S=.98 and deterministic structured
+    # extraction E=.99. Governance coverage rules are admission-only:
+    # V=0, C=0, therefore r=.98*.99=.9702.
+    assert stored.source_quality_s == Decimal("0.98")
+    assert stored.extraction_quality_e == Decimal("0.99")
+    assert stored.validation_factor_v == Decimal("0.00")
+    assert stored.conflict_factor_c == Decimal("0.00")
+    assert stored.reliability_r == Decimal("0.9702")
+
+    # Exact retry is immutable/idempotent.
+    retry = service.evaluate_and_persist(
+        validated_evidence_set_id="validated-officers",
+        processing_run_id="first",
+        input_id="officers",
+        input_type=OFFICER_EVENTS_24M,
+        company_number=NUMBER,
+        assessment_date=NOW.date(),
+        window_start=WINDOW24,
+        resources=(Resource.OFFICERS,),
+    )
+
+    assert retry.assessment == result.assessment
+
+    assert database.query(
+        "SELECT COUNT(*) AS n "
+        "FROM validated_evidence_set "
+        "WHERE validated_evidence_set_id='validated-officers'"
+    ) == [{"n": 1}]
+
+    assert database.query("PRAGMA foreign_key_check") == []

@@ -13,7 +13,7 @@ from risk_intelligence.ingestion.companies_house.resolution import search_compan
 from risk_intelligence.persistence.connection import Database
 from risk_intelligence.storage.local import LocalStorage
 from risk_intelligence.storage.objects import checksum
-from conftest import NOW, NUMBER
+from tests.m2.conftest import NOW, NUMBER
 
 
 def test_pre_1992_appointment_is_not_fabricated_and_identity_is_not_name() -> None:

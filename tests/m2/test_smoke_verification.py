@@ -9,7 +9,7 @@ from risk_intelligence.ingestion.companies_house.client import CompaniesHouseCli
 from risk_intelligence.ingestion.companies_house.service import CompaniesHouseIngestion
 from risk_intelligence.persistence.connection import Database
 from risk_intelligence.storage.local import LocalStorage
-from conftest import NOW, NUMBER, FakeAPI
+from tests.m2.conftest import NOW, NUMBER, FakeAPI
 
 
 @pytest.mark.parametrize('failure', [404,401,503])

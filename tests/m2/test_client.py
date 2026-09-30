@@ -8,7 +8,7 @@ from pydantic import SecretStr
 import pytest
 
 from risk_intelligence.ingestion.companies_house.client import CompaniesHouseClient, Response, RetrievalError, ParseError, company_number, json_object
-from conftest import NOW, NUMBER
+from tests.m2.conftest import NOW, NUMBER
 
 
 def test_real_transport_uses_basic_auth_and_allowlisted_response_metadata(monkeypatch: pytest.MonkeyPatch) -> None:

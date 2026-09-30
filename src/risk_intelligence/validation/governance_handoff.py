@@ -2,6 +2,7 @@
 
 from datetime import date
 
+from risk_intelligence.domain.enums import AvailabilityStatus
 from risk_intelligence.domain.facts import StructuredFact
 from risk_intelligence.ingestion.companies_house.policy import Resource
 from risk_intelligence.persistence.connection import Database, IntegrityError
@@ -25,7 +26,9 @@ def _snapshot_from_row(row) -> Snapshot:
         coverage_start=date.fromisoformat(text(row["coverage_start"])),
         coverage_end=date.fromisoformat(text(row["coverage_end"])),
         complete=bool(row["complete"]),
-        availability_status=row["availability_status"],
+        availability_status=AvailabilityStatus(
+            text(row["availability_status"])
+        ),
         page_count=int(row["page_count"]),
         item_count=int(row["item_count"]),
         reused_snapshot_id=row["reused_snapshot_id"],

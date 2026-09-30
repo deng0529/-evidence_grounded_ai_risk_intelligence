@@ -18,7 +18,7 @@ from risk_intelligence.persistence.connection import Database, PersistenceError,
 from risk_intelligence.persistence.migrations import migrate, MIGRATIONS_DIRECTORY
 from risk_intelligence.storage.local import LocalStorage
 from risk_intelligence.storage.objects import checksum
-from conftest import NOW, NUMBER, FakeAPI
+from tests.m2.conftest import NOW, NUMBER, FakeAPI
 
 
 def test_m1_database_upgrade_preserves_history_and_is_idempotent(tmp_path: Path) -> None:

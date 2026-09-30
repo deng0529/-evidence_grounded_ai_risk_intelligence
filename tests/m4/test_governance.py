@@ -420,3 +420,91 @@ def test_missing_required_resource_is_explicit_failure() -> None:
         result.context.availability_status
         == AvailabilityStatus.RETRIEVAL_FAILED
     )
+
+def test_future_officer_event_fails_assessment_boundary() -> None:
+    records = GovernanceEvidenceSet(
+        input_id="officers",
+        input_type=OFFICER_EVENTS_24M,
+        company_number=COMPANY,
+        assessment_date=ASSESSMENT,
+        window_start=WINDOW24,
+        snapshots=(snapshot(Resource.OFFICERS),),
+        facts=(
+            fact(
+                "future-officer",
+                "officer-a",
+                "OFFICERS_APPOINTED_ON",
+                date(2026, 10, 1),
+            ),
+        ),
+    )
+
+    result = validate(records)
+    outcome = next(
+        item for item in result.outcomes
+        if item.rule_id == "governance.window_coverage"
+    )
+
+    assert outcome.result.value == "FAIL"
+    assert outcome.hard_fail
+    assert not result.admissible
+
+
+def test_future_psc_event_fails_assessment_boundary() -> None:
+    records = GovernanceEvidenceSet(
+        input_id="psc",
+        input_type=PSC_EVENTS_36M,
+        company_number=COMPANY,
+        assessment_date=ASSESSMENT,
+        window_start=WINDOW36,
+        snapshots=(
+            snapshot(Resource.PSC),
+            snapshot(Resource.STATEMENTS),
+        ),
+        facts=(
+            fact(
+                "future-psc",
+                "psc-a",
+                "PSC_NOTIFIED_ON",
+                date(2026, 10, 1),
+            ),
+        ),
+    )
+
+    result = validate(records)
+    outcome = next(
+        item for item in result.outcomes
+        if item.rule_id == "governance.window_coverage"
+    )
+
+    assert outcome.result.value == "FAIL"
+    assert not result.admissible
+
+
+def test_future_filing_event_fails_assessment_boundary() -> None:
+    records = GovernanceEvidenceSet(
+        input_id="filings",
+        input_type=FILING_EVENTS_36M,
+        company_number=COMPANY,
+        assessment_date=ASSESSMENT,
+        window_start=WINDOW36,
+        snapshots=(snapshot(Resource.FILINGS),),
+        facts=(
+            fact(
+                "future-filing",
+                "filing-a",
+                "FILINGS_DATE",
+                date(2026, 10, 1),
+            ),
+        ),
+    )
+
+    result = validate(records)
+    outcome = next(
+        item for item in result.outcomes
+        if item.rule_id == "governance.window_coverage"
+    )
+
+    assert outcome.result.value == "FAIL"
+    assert outcome.hard_fail
+    assert not result.admissible

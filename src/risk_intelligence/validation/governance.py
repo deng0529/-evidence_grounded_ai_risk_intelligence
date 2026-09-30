@@ -136,6 +136,39 @@ class GovernanceEvidenceSet:
             and all(subject is not None for subject, _ in pairs)
         )
 
+        # M4 temporal admission is bounded by the assessment date.
+        # M2 FILINGS already filters its analytical horizon, but OFFICERS
+        # and PSC resources retain historical/current records.  M4 must
+        # therefore reject any structured event date that lies in the
+        # future relative to this assessment, without silently discarding it.
+        assessment_boundary_valid = True
+        date_concepts = {
+            OFFICER_EVENTS_24M: {
+                "OFFICERS_APPOINTED_ON",
+                "OFFICERS_RESIGNED_ON",
+            },
+            PSC_EVENTS_36M: {
+                "PSC_NOTIFIED_ON",
+                "PSC_CEASED_ON",
+                "STATEMENTS_NOTIFIED_ON",
+                "STATEMENTS_CEASED_ON",
+                "STATEMENTS_RESTRICTIONS_NOTICE_WITHDRAWAL_DATE",
+            },
+            FILING_EVENTS_36M: {
+                "FILINGS_DATE",
+                "FILINGS_ACTION_DATE",
+            },
+        }[self.input_type]
+
+        for fact in self.facts:
+            if (
+                fact.canonical_concept in date_concepts
+                and isinstance(fact.value, DateValue)
+                and fact.value.value is not None
+                and fact.value.value > self.assessment_date
+            ):
+                assessment_boundary_valid = False
+
         grouped: dict[str, dict[str, StructuredFact]] = {}
 
         for fact in self.facts:
@@ -223,6 +256,10 @@ class GovernanceEvidenceSet:
             ValidationField(
                 name="window_complete",
                 value=BooleanValue(value=window_complete),
+            ),
+            ValidationField(
+                name="assessment_boundary_valid",
+                value=BooleanValue(value=assessment_boundary_valid),
             ),
             ValidationField(
                 name="duplicate_free",
@@ -316,21 +353,40 @@ class WindowCoverageRule:
             PSC_EVENTS_36M,
             FILING_EVENTS_36M,
         ),
-        required_inputs=("window_complete", "window_start"),
+        required_inputs=(
+            "window_complete",
+            "window_start",
+            "assessment_boundary_valid",
+        ),
         role=ValidationRole.HARD_FAIL,
     )
 
     def execute(self, context: AnalyticalInput) -> RuleOutcome:
-        ok = bool(_field(context, "window_complete"))
+        coverage_ok = bool(_field(context, "window_complete"))
+        boundary_ok = bool(
+            _field(context, "assessment_boundary_valid")
+        )
+        ok = coverage_ok and boundary_ok
+
+        if ok:
+            reason = (
+                "Snapshot covers the complete analytical window and "
+                "event dates do not exceed the assessment date"
+            )
+        elif not coverage_ok:
+            reason = (
+                "Snapshot does not cover the complete analytical window"
+            )
+        else:
+            reason = (
+                "Governance event population contains a date after "
+                "the assessment date"
+            )
 
         return _outcome(
             self,
             ValidationStatus.PASS if ok else ValidationStatus.FAIL,
-            (
-                "Snapshot covers the complete analytical window"
-                if ok
-                else "Snapshot does not cover the complete analytical window"
-            ),
+            reason,
             evidence_ids=context.evidence_ids,
             failure=(
                 None

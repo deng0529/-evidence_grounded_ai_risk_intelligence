@@ -12,7 +12,7 @@ from risk_intelligence.persistence.connection import Database
 from risk_intelligence.persistence.fact_repositories import SqlStructuredFactRepository
 from risk_intelligence.storage.local import LocalStorage
 from risk_intelligence.storage.objects import checksum, EvidenceIntegrityError, StorageAccessError
-from conftest import FakeAPI, NOW, NUMBER
+from tests.m2.conftest import FakeAPI, NOW, NUMBER
 
 
 def service(database: Database, storage: LocalStorage, api: FakeAPI, policy: FreshnessPolicy | None = None) -> CompaniesHouseIngestion:
