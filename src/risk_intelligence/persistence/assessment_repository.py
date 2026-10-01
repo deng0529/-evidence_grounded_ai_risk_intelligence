@@ -55,6 +55,12 @@ class SqlAssessmentRepository:
         rows = self.database.query("SELECT * FROM assessment WHERE assessment_id=?", (assessment_id,))
         return restore(_assessment, rows[0]) if rows else None
 
+    def list_assessments(self) -> tuple[Assessment, ...]:
+        """List persisted contexts deterministically for explicit UI selection."""
+        rows = self.database.query(
+            "SELECT * FROM assessment ORDER BY company_number, assessment_date DESC, assessment_id")
+        return tuple(restore(_assessment, row) for row in rows)
+
     def save_assessment(self, assessment: Assessment) -> None:
         """Save an immutable supplied assessment; identical retries are accepted."""
         with self.database.transaction():

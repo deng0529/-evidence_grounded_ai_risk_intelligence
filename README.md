@@ -8,10 +8,13 @@ An AI-assisted risk intelligence prototype that combines automated document inge
 
 ## Status
 
-M0 and M1 are committed; M1 passed a real Turso/R2 smoke test. M2 implements
-deterministic Companies House API evidence ingestion, resource completeness and
-freshness/reuse. See [M2 notes](docs/implementation/m2-ingestion-notes.md) for its
-explicit live entry point and boundaries. No scoring engines or UI are implemented.
+M4–M7 provide validated evidence, six-variable model v1.2 leaf beliefs, hierarchical ER aggregation and deterministic traceability. M8 adds the Streamlit application. See [M8 application notes](docs/implementation/M8-application-streamlit.md) for configuration, supported workflows and limitations. Deployment is deferred to M9.
+
+Run the UI from the repository root after installing the project and configuring an existing migrated database:
+
+```powershell
+.venv\Scripts\python.exe -m streamlit run streamlit_app.py
+```
 
 ## Local development (Python 3.12)
 

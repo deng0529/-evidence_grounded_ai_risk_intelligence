@@ -40,7 +40,8 @@ For MVP implementation, use the following precedence:
 - `docs/implementation/M6-hierarchical-er-aggregation-engine.md` — M6 — Hierarchical ER Aggregation Engine
 - `docs/implementation/M7-explanation-traceability.md` — current M7 deterministic explanation layer; M8 owns the later UI
 - `docs/implementation/M7-streamlit-ui.md` — historical milestone numbering; superseded for current M7 scope
-- `docs/implementation/M8-deployment.md`
+- `docs/implementation/M8-application-streamlit.md` — current M8 application/UI integration; M9 owns deployment
+- `docs/implementation/M8-deployment.md` — historical milestone numbering
 - reusable prompts in `docs/implementation/prompts/`
 
 ## Risk implementation boundary
