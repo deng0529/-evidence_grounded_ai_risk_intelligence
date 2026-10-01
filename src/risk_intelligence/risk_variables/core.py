@@ -18,6 +18,7 @@ from risk_intelligence.domain.risk import BeliefDistribution, ProvisionalBelief,
 
 CALCULATION_VERSION = "m5-calculation-v1.2"
 RISK_MODEL_VERSION = "1.2"
+ER_MODEL_VERSION = "1.2"
 DECIMAL_CONTEXT = Context(prec=50, rounding=ROUND_HALF_EVEN)
 
 
@@ -61,6 +62,8 @@ def _load_model_spec() -> dict:
         raise RuntimeError("Risk model configuration/version mismatch")
     if raw.get("calculation_version") != CALCULATION_VERSION:
         raise RuntimeError("Risk model calculation-version mismatch")
+    if raw.get("er_model_version") != ER_MODEL_VERSION:
+        raise RuntimeError("ER model configuration/version mismatch")
     return raw
 
 
@@ -111,6 +114,27 @@ _policies = {str(spec["weighting_policy"]) for spec in _CURRENT_DOMAINS.values()
 if len(_policies) != 1:
     raise RuntimeError("MVP domains must use one within-domain weighting policy")
 WITHIN_DOMAIN_WEIGHTING_POLICY = next(iter(_policies))
+
+
+def model_aggregation_config(version: str) -> Mapping[str, Mapping[str, object]]:
+    """Return versioned domain membership/weights; never infer aggregation from code names."""
+    try:
+        domains = _MODEL_SPEC["models"][version]["domains"]
+    except KeyError:
+        raise ValueError("Risk model version has no aggregation configuration") from None
+    active = tuple(model_definitions(version))
+    configured = tuple(code for spec in domains.values() for code in spec["variables"])
+    if configured != active:
+        raise RuntimeError("Aggregation domains must exactly partition active variables in registry order")
+    weights = [Decimal(str(spec["weight"])) for spec in domains.values()]
+    if sum(weights, Decimal(0)) != Decimal(1):
+        raise RuntimeError("Aggregation domain weights must sum to 1")
+    return MappingProxyType({domain: MappingProxyType({
+        "weight": Decimal(str(spec["weight"])),
+        "weighting_policy": str(spec["weighting_policy"]),
+        "variables": tuple(spec["variables"]),
+    }) for domain, spec in domains.items()})
+
 
 if tuple(code for codes in DOMAIN_VARIABLES.values() for code in codes) != ACTIVE_VARIABLES:
     raise RuntimeError("Current model domain variables must exactly match active variables")

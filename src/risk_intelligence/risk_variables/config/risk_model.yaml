@@ -2,6 +2,7 @@
 # model membership, reference levels, domain membership and aggregation weights/policy.
 current_model_version: "1.2"
 calculation_version: "m5-calculation-v1.2"
+er_model_version: "1.2"
 
 variables:
   G1.1: {low: "0", high: "90", unit: days}
