@@ -38,7 +38,8 @@ For MVP implementation, use the following precedence:
 - `docs/implementation/M4-validation-reliability.md`
 - `docs/implementation/M5-risk-variable-leaf-belief-engine.md` — M5 — Risk Variable & Leaf Belief Engine
 - `docs/implementation/M6-hierarchical-er-aggregation-engine.md` — M6 — Hierarchical ER Aggregation Engine
-- `docs/implementation/M7-streamlit-ui.md`
+- `docs/implementation/M7-explanation-traceability.md` — current M7 deterministic explanation layer; M8 owns the later UI
+- `docs/implementation/M7-streamlit-ui.md` — historical milestone numbering; superseded for current M7 scope
 - `docs/implementation/M8-deployment.md`
 - reusable prompts in `docs/implementation/prompts/`
 

@@ -81,6 +81,17 @@ class VariableRepository:
 
     def get(self, variable_result_id: str) -> LeafAssessment | None:
         """Restore frozen leaf and verify lineage; never execute a new source selection."""
+        leaf = self.get_persisted(variable_result_id)
+        if leaf is not None:
+            self._check(leaf)
+        return leaf
+
+    def get_persisted(self, variable_result_id: str) -> LeafAssessment | None:
+        """Read exact stored M5 data/edges without rerunning belief mathematics.
+
+        Intended for explanation consumers. Structural and redundant-column checks
+        remain enforced; save/get retain their existing calculation verification.
+        """
         rows = self.database.query("SELECT * FROM m5_variable_result WHERE variable_result_id=?", (variable_result_id,))
         if not rows:
             return None
@@ -88,7 +99,19 @@ class VariableRepository:
         links = self.database.query("SELECT * FROM m5_validated_input WHERE variable_result_id=? ORDER BY position", (variable_result_id,))
         if leaf.result.variable_result_id != variable_result_id or links != self._links(leaf):
             raise IntegrityError("M5 persisted identity/lineage differs")
-        self._check(leaf)
+        result = leaf.result
+        expected = {
+            "assessment_id": result.assessment_id, "variable_code": result.variable_code,
+            "reliability_id": result.reliability_id,
+            "raw_value": str(result.raw_value) if result.raw_value is not None else None,
+            "reliability_r": str(result.reliability_r),
+            "low_belief": str(result.final_belief.low_belief),
+            "high_belief": str(result.final_belief.high_belief),
+            "unknown_belief": str(result.final_belief.unknown_belief),
+            "calculation_version": leaf.calculation_version,
+        }
+        if any(rows[0][name] != value for name, value in expected.items()):
+            raise IntegrityError("M5 stored columns differ from audit record")
         return leaf
 
     def for_assessment(self, assessment_id: str) -> tuple[VariableResult, ...]:
