@@ -91,6 +91,8 @@ def test_partial_deterministic_triggers_verified_fallback_and_reuses_identical_r
     assert [p['page'] for p in model.calls[0]['pages']] == [2]
     assert len(first.facts) == 3  # Two deterministic facts plus admitted fallback.
     assert first.facts[-1].value == Decimal(100)
+    assert first.facts[-1].statement_context == 'Company balance sheet'
+    assert first.facts[-1].source_scope == 'COMPANY'
     assert first.fallback.decisions[0].status == 'AVAILABLE'
     service._save_facts(raw,first)
     before = service.database.query('SELECT count(*) AS n FROM fact')[0]['n']
@@ -98,6 +100,51 @@ def test_partial_deterministic_triggers_verified_fallback_and_reuses_identical_r
     service._save_facts(raw,second)
     assert second == first and len(model.calls) == 1
     assert service.database.query('SELECT count(*) AS n FROM fact')[0]['n'] == before
+
+
+def test_located_heading_roundtrip_reaches_m4_without_strength_uplift(fallback_context):
+    from risk_intelligence.persistence.accounts_repository import AccountsRepository
+    from risk_intelligence.validation.financial_service import FinancialValidationService
+    from datetime import date
+
+    service, raw, page = fallback_context
+    service.llm = Model([supported(page)])
+    extraction, _ = service._extract(raw, 'r1', 'ZZ000003')
+    ids = service._save_facts(raw, extraction)
+    repository = AccountsRepository(service.database)
+    fact = next(repository.canonical.get(identity) for identity in ids
+                if repository.canonical.get(identity).canonical_concept == 'CURRENT_LIABILITIES'
+                and repository.canonical.get(identity).value_numeric is not None)
+    source = repository.get_observation_lineage(fact.financial_fact_id)[1][0]
+    assert source.statement_context == 'Company balance sheet' and source.source_scope == 'COMPANY'
+    result = FinancialValidationService(service.database).evaluate_and_persist(
+        validated_fact_id='validated-liability', fact_id=fact.financial_fact_id,
+        assessment_date=date(2026,9,29), analytical_scope='COMPANY')
+    assert result.assessment.validation.admissible
+    assert result.assessment.calculation.reliability_r == Decimal('.8075')
+
+
+def test_current_m3_publishes_derived_sql_proof_and_m4_requires_it(fallback_context, monkeypatch):
+    from datetime import date
+    from tests.m3.test_asset_side import inspected, derivations
+    from risk_intelligence.persistence.accounts_repository import AccountsRepository
+    from risk_intelligence.persistence.connection import IntegrityError
+    from risk_intelligence.validation.financial_service import FinancialValidationService
+
+    service, raw, _ = fallback_context
+    result = inspected()
+    result = result.model_copy(update={'interpretations': tuple(derivations(result))})
+    ids = service._save_facts(raw, result)
+    repository = AccountsRepository(service.database)
+    fact = next(repository.canonical.get(identity) for identity in ids
+                if repository.canonical.get(identity).canonical_concept == 'TOTAL_ASSETS')
+    assert repository.get_derivation_proof(fact.financial_fact_id) is not None
+    validator = FinancialValidationService(service.database)
+    assessment = validator.evaluate(fact_id=fact.financial_fact_id, assessment_date=date(2026,9,29), analytical_scope='COMPANY')
+    assert assessment.assessment.validation.admissible
+    monkeypatch.setattr(validator.accounts, 'get_derivation_proof', lambda identity: None)
+    with pytest.raises(IntegrityError, match='no completeness proof'):
+        validator.evaluate(fact_id=fact.financial_fact_id, assessment_date=date(2026,9,29), analytical_scope='COMPANY')
 
 
 @pytest.mark.parametrize('change',[{'raw_value':'(999)','value':'999'},{'scope':'GROUP'},

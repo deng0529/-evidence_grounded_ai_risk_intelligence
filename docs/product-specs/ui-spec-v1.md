@@ -1,5 +1,8 @@
 # UI Specification v1
 
+> **MVP v1.2 amendment (1 Oct 2026):** For new assessments, `risk-model-v1.2.md` supersedes the older 11-variable UI/architecture references below. The active MVP has six leaves, an explicit selected financial reporting year, no cross-period trend/event-window leaves, Governance/Financial weights 0.40/0.60, and equal active-variable weighting within each domain. Older sections are retained as historical v1 context.
+
+
 Status: FROZEN FOR MVP IMPLEMENTATION
 
 

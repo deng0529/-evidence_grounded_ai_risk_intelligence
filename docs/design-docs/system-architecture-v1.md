@@ -1,5 +1,8 @@
 # System Flow & Architecture v1
 
+> **MVP v1.2 amendment (1 Oct 2026):** For new assessments, `risk-model-v1.2.md` supersedes the older 11-variable UI/architecture references below. The active MVP has six leaves, an explicit selected financial reporting year, no cross-period trend/event-window leaves, Governance/Financial weights 0.40/0.60, and equal active-variable weighting within each domain. Older sections are retained as historical v1 context.
+
+
 Evidence-Grounded AI Risk Intelligence
 Pre-Codex MVP Design
 
@@ -96,7 +99,7 @@ Milestone numbering follows `docs/implementation/roadmap-v1.md`:
 - M8 Deployment, caching and public demo.
 
 M5 produces the final Low / High / Unknown belief distribution for each of
-G1.1, G1.2, G2.1, G2.2, G2.3, G3.1, F1.1, F1.2, F2.2, F2.3 and F3.1.
+G1.1, G1.2, G2.1, G2.2, G2.3, G3.1, F1.1, F1.2, F2.2, F2.3.
 These 11 final distributions are M6 input, identified by variable code and
 linked to the existing VariableResult records and assessment/model-version
 context defined in `docs/design-docs/data-dictionary-v1.md`. Each distribution

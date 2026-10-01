@@ -24,12 +24,19 @@ def fact_input(fact: PersistedValidatedFact, *, mandatory: bool = True) -> Valid
 
 
 def calculate_financial(code: str, facts: tuple[PersistedValidatedFact, ...], *,
-                        company_id: str, company_number: str, scope: str, assessment_date: date) -> Calculation:
-    """Select the latest complete compatible inputs; ambiguous observations stay unresolved."""
+                        company_id: str, company_number: str, scope: str, assessment_date: date,
+                        reporting_year: int | None = None) -> Calculation:
+    """Select one explicitly requested reporting year; never fall back across years.
+
+    ``reporting_year=None`` is retained only for historical v1/direct-calculator
+    compatibility. MVP v1.1 orchestration always supplies the selected year.
+    """
     concepts = DEPENDENCIES[code]
     candidates = sorted((f for f in facts if f.company_id == company_id and f.company_number == company_number
                          and f.canonical_concept in concepts and f.analytical_scope == scope
-                         and f.assessment_date <= assessment_date), key=lambda f: f.validated_fact_id)
+                         and f.assessment_date <= assessment_date
+                         and (reporting_year is None or (f.period_end is not None and f.period_end.year == reporting_year))),
+                        key=lambda f: f.validated_fact_id)
     if len({f.validated_fact_id for f in candidates}) != len(candidates):
         raise ValueError("Duplicate validated fact ID")
     inspected = tuple(fact_input(f, mandatory=False) for f in candidates)
@@ -44,6 +51,8 @@ def calculate_financial(code: str, facts: tuple[PersistedValidatedFact, ...], *,
     if code == "F1.2":
         usable = [f for f in usable if f.comparability_status == ComparabilityStatus.COMPARABLE]
     periods = sorted({f.period_end for f in usable}, reverse=True)
+    if reporting_year is not None:
+        periods = [period for period in periods if period.year == reporting_year]
     selected: list[PersistedValidatedFact] = []
     for period in periods:
         observations = [f for f in usable if f.period_end == period]

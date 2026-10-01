@@ -61,8 +61,7 @@ def test_reproducible_under_ambient_decimal_context_and_no_weight_discount():
     with localcontext() as context:
         context.prec = 3
         assert leaf(calculation) == expected
-    assert sum(d.effective_weight for d in DEFINITIONS.values()) == 1
-    assert set(DEFINITIONS) == {"G1.1", "G1.2", "G2.1", "G2.2", "G2.3", "G3.1", "F1.1", "F1.2", "F2.2", "F2.3", "F3.1"}
+    assert set(DEFINITIONS) == {"G1.1", "G1.2", "G2.2", "F1.1", "F2.2", "F2.3"}
 
 
 def test_available_value_requires_mandatory_evidence_and_unique_ids():
@@ -70,3 +69,19 @@ def test_available_value_requires_mandatory_evidence_and_unique_ids():
         leaf(Calculation(value=Decimal(1)))
     with pytest.raises(ValueError):
         leaf(Calculation(value=Decimal(1), inputs=(ref(), ref())))
+
+
+def test_v12_model_membership_is_loaded_from_versioned_configuration():
+    from risk_intelligence.risk_variables.core import (
+        ACTIVE_VARIABLES, DOMAIN_VARIABLES, DOMAIN_WEIGHTS, WITHIN_DOMAIN_WEIGHTING_POLICY,
+        model_definitions,
+    )
+    assert ACTIVE_VARIABLES == ("G1.1", "G1.2", "G2.2", "F1.1", "F2.2", "F2.3")
+    assert tuple(model_definitions("1.1")) == ("G1.1", "G1.2", "G2.2", "F1.1", "F2.2", "F2.3", "F3.1")
+    assert len(model_definitions("1")) == 11
+    assert DOMAIN_VARIABLES == {
+        "GOVERNANCE": ("G1.1", "G1.2", "G2.2"),
+        "FINANCIAL": ("F1.1", "F2.2", "F2.3"),
+    }
+    assert DOMAIN_WEIGHTS == {"GOVERNANCE": Decimal("0.40"), "FINANCIAL": Decimal("0.60")}
+    assert WITHIN_DOMAIN_WEIGHTING_POLICY == "EQUAL_WEIGHT_ACTIVE_VARIABLES"

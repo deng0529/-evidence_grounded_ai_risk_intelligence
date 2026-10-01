@@ -148,3 +148,12 @@ def test_registry_order_is_deterministic(deterministic) -> None:
     assert reports[0] == reports[1]
     assert [o.rule_id for o in reports[0].outcomes] == ['financial.currency', 'financial.evidence_grounding',
         'financial.identity', 'financial.period', 'financial.scope', 'financial.semantic_consistency', 'financial.unit_scale']
+
+
+def test_derived_method_label_cannot_bypass_required_semantic_evidence(deterministic):
+    provenance, source, semantic = deterministic
+    semantic = semantic.model_copy(update={"method": "DETERMINISTIC_DERIVATION", "source": None})
+    report, outcome = validate(provenance, source, semantic)
+    assert not report.admissible
+    assert outcome.result.value == "INCONCLUSIVE"
+    assert "structured derivation evidence" in outcome.reason

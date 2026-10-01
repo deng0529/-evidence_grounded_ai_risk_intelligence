@@ -60,6 +60,20 @@ class SqlAssessmentRepository:
         with self.database.transaction():
             insert_immutable(self.database, "assessment", "assessment_id", _assessment_row(assessment))
 
+    def save_financial_reporting_year(self, assessment_id: str, reporting_year: int) -> None:
+        """Persist the explicitly selected financial reporting year for MVP v1.1."""
+        if not 1900 <= reporting_year <= 9999:
+            raise ValueError("reporting_year must be a four-digit year")
+        with self.database.transaction():
+            insert_immutable(self.database, "assessment_financial_context", "assessment_id",
+                             {"assessment_id": assessment_id, "reporting_year": reporting_year})
+
+    def get_financial_reporting_year(self, assessment_id: str) -> int | None:
+        """Return the selected reporting year; never infer it from assessment_date."""
+        rows = self.database.query("SELECT reporting_year FROM assessment_financial_context WHERE assessment_id=?",
+                                   (assessment_id,))
+        return int(rows[0]["reporting_year"]) if rows else None
+
     def get_processing_run(self, processing_run_id: str) -> ProcessingRun | None:
         """Return persisted run metadata for inspection, without running a workflow."""
         rows = self.database.query("SELECT * FROM processing_run WHERE processing_run_id=?", (processing_run_id,))

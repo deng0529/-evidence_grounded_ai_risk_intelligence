@@ -4,7 +4,7 @@ from risk_intelligence.persistence.assessment_repository import SqlAssessmentRep
 from risk_intelligence.persistence.connection import Database, IntegrityError
 from risk_intelligence.persistence.records import insert_immutable
 from risk_intelligence.persistence.validated_repository import ValidatedEvidenceRepository
-from risk_intelligence.risk_variables.core import DEFINITIONS, LeafAssessment, make_leaf
+from risk_intelligence.risk_variables.core import model_definitions, LeafAssessment, make_leaf
 from risk_intelligence.domain.risk import VariableResult
 from risk_intelligence.validation.obligation_service import ObligationValidationService
 
@@ -25,7 +25,8 @@ class VariableRepository:
         reproduced = make_leaf(code=result.variable_code, calculation=leaf.calculation,
                                assessment_id=result.assessment_id, company_id=leaf.company_id,
                                company_number=leaf.company_number, assessment_date=leaf.assessment_date,
-                               scope=leaf.analytical_scope, calculated_at=result.calculated_at)
+                               scope=leaf.analytical_scope, calculated_at=result.calculated_at,
+                               model_version=result.risk_model_version)
         if reproduced != leaf:
             raise IntegrityError("M5 leaf beliefs or identity do not reproduce")
         repository = ValidatedEvidenceRepository(self.database)
@@ -91,11 +92,14 @@ class VariableRepository:
         return leaf
 
     def for_assessment(self, assessment_id: str) -> tuple[VariableResult, ...]:
-        """M6 handoff: all eleven final leaves unchanged, with no aggregation or discount."""
+        """M6 handoff: all active model leaves unchanged, with no aggregation or discount."""
         rows = self.database.query("SELECT variable_result_id FROM m5_variable_result WHERE assessment_id=? ORDER BY variable_code", (assessment_id,))
         leaves = tuple(self.get(str(row["variable_result_id"])) for row in rows)
-        if {leaf.result.variable_code for leaf in leaves} != set(DEFINITIONS):
-            raise IntegrityError("M6 handoff requires exactly all eleven leaves")
+        context = SqlAssessmentRepository(self.database).get_assessment(assessment_id)
+        if context is None:
+            raise IntegrityError("M5 assessment is missing")
+        if len(leaves) != len(model_definitions(context.risk_model_version)) or {leaf.result.variable_code for leaf in leaves} != set(model_definitions(context.risk_model_version)):
+            raise IntegrityError("M6 handoff requires exactly all active model leaves")
         if len({leaf.analytical_scope for leaf in leaves}) != 1:
             raise IntegrityError("M6 handoff mixes analytical scopes")
         return tuple(leaf.result for leaf in leaves)

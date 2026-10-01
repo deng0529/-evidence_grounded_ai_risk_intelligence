@@ -136,7 +136,8 @@ class FinancialUnitScaleRule:
                 'Canonical unit or linked monetary provenance is missing or ambiguous', details)
         unresolved = False
         pdf_versions = {'pdf-table-v3', 'pdf-table-v4', 'financial-statement-structure-v3',
-                        'financial-statement-structure-v4', 'located-financial-admission-v3'}
+                        'financial-statement-structure-v4', 'located-financial-admission-v3',
+                        'located-financial-admission-v4'}
         for source in sources:
             known_pdf = source.parser_version in pdf_versions
             known_ixbrl = source.parser_version == 'ixbrl-monetary-v1'

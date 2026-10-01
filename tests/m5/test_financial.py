@@ -39,8 +39,8 @@ def fact(concept, value, year=2025, **changes):
     return replace(record, **changes)
 
 
-def calculate(code, *facts):
-    return calculate_financial(code, facts, company_id="company", company_number="ZZ000001", scope="COMPANY", assessment_date=DAY)
+def calculate(code, *facts, reporting_year=None):
+    return calculate_financial(code, facts, company_id="company", company_number="ZZ000001", scope="COMPANY", assessment_date=DAY, reporting_year=reporting_year)
 
 
 @pytest.mark.parametrize("code,operands,expected", [
@@ -99,3 +99,21 @@ def test_latest_compatible_period_and_ambiguous_duplicates():
     assert all(item.mandatory == item.validated_id.endswith('2025') for item in result.inputs)
     duplicate = replace(new[0], validated_fact_id="competing")
     assert calculate("F2.2", *new, duplicate).reasons == (Reason.AMBIGUOUS_SELECTION,)
+
+
+def test_v11_selected_reporting_year_never_falls_back_to_another_year():
+    old = (fact("CURRENT_ASSETS", "80", 2024), fact("CURRENT_LIABILITIES", "100", 2024))
+    new = (fact("CURRENT_ASSETS", "150", 2025), fact("CURRENT_LIABILITIES", "100", 2025))
+    assert calculate("F2.2", *old, *new, reporting_year=2024).value == Decimal(".8")
+    assert calculate("F2.2", *old, *new, reporting_year=2025).value == Decimal("1.5")
+    missing = calculate("F2.2", *old, reporting_year=2025)
+    assert missing.value is None
+    assert missing.reasons == (Reason.MISSING_INPUT,)
+
+
+def test_other_year_failure_does_not_change_selected_year_missingness():
+    old = fact("CURRENT_LIABILITIES", "10", 2024,
+               availability_status=AvailabilityStatus.EXTRACTION_FAILED, value_numeric=None)
+    result = calculate("F2.2", old, reporting_year=2025)
+    assert result.availability == AvailabilityStatus.NOT_DISCLOSED
+    assert not result.inputs

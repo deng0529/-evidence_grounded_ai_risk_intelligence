@@ -21,10 +21,12 @@ Use a small manually selected test set during development. Expand only after the
 
 ## Frozen risk scope
 
-Exactly two top-level domains, Governance Risk and Financial Risk, contain
-11 frozen leaf variables as defined in `docs/design-docs/risk-model-v1.md`.
-Business Resilience and resilience indicators are deferred outside the current
-MVP; no third risk domain is implemented.
+Exactly two top-level domains, Governance Risk and Financial Risk, use the active
+six-leaf single-period model defined in `docs/design-docs/risk-model-v1.2.md`.
+A user selects one financial reporting year. Cross-period trend and historical
+event-window variables are deferred. Governance/Financial domain importance is
+0.40/0.60; active variables are equal-weight within their domain. Business
+Resilience remains outside the MVP; no third risk domain is implemented.
 
 ## Initial output
 For each company:

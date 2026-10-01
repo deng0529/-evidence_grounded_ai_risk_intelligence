@@ -111,6 +111,31 @@ class FinancialSemanticConsistencyRule:
             return _outcome(self.definition, context, ValidationStatus.FAIL, reason, details,
                             AdmissibilityReason.IDENTITY_FAILURE)
 
+        if semantic.method == 'DETERMINISTIC_DERIVATION':
+            if semantic.canonical_fact_id != fact.financial_fact_id or semantic.source is not None:
+                return unresolved('Derived semantic handoff is missing or ambiguously linked')
+            # A method label alone cannot exempt a direct/mislabelled fact from
+            # semantic validation. Only a linked, supported derivation target
+            # may delegate to the mandatory derivation/completeness gates.
+            from .financial_derivation import FinancialDerivationEvidence
+            field = next((item for item in context.fields if item.name == 'financial_derivation_evidence'), None)
+            if field is None or not isinstance(field.value, TextValue) or field.value.value is None:
+                return unresolved('Derived semantics require structured derivation evidence')
+            derivation = FinancialDerivationEvidence.model_validate_json(field.value.value)
+            relationship = {'TOTAL_ASSETS': 'ASSET_SIDE', 'INTEREST_BEARING_DEBT': 'EXHAUSTIVE_INTEREST_BEARING'}.get(fact.canonical_concept)
+            if (fact.extraction_method.value != 'DERIVED' or derivation.origin != 'DERIVED'
+                    or derivation.canonical_fact_id != fact.financial_fact_id
+                    or derivation.mapping_version != semantic.mapping_version
+                    or not derivation.components or derivation.proof is None
+                    or relationship is None or derivation.proof.relationship != relationship
+                    or derivation.proof.target != fact.canonical_concept):
+                return unresolved('Derived target lacks a matching supported semantic completeness contract')
+            return _outcome(
+                self.definition, context, ValidationStatus.NOT_APPLICABLE,
+                'Derived target semantics are validated by structured derivation and completeness rules',
+                details,
+            )
+
         if (source is None or semantic.canonical_fact_id != fact.financial_fact_id
                 or source.document_id != fact.document_id or source.evidence_id not in fact.evidence_ids):
             return unresolved('Normalization source/observation linkage is missing or ambiguous')

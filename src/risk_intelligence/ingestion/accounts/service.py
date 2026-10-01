@@ -36,7 +36,7 @@ from .interpretation import VERSION as INTERPRETATION_VERSION, canonical as inte
 class AccountsIngestion:
     """Acquire only M2-linked accounts; failed documents do not erase valid results."""
 
-    def __init__(self, database: Database, storage: EvidenceStorage, client: DocumentClient,
+    def __init__(self, database: Database, storage: EvidenceStorage, client: DocumentClient | None,
                  *, registry: FinancialMappingRegistry | None = None,
                  tessdata: str | None = None, ocr_version: str = 'disabled',
                  llm: OpenAIExtraction | None = None) -> None:
@@ -284,6 +284,8 @@ class AccountsIngestion:
                     reused_raw = True
                     result, reused_parse = self._extract(raw, run_id, company_number)
                 else:
+                    if self.client is None:
+                        raise RetrievalError('No reusable raw accounts evidence; network retrieval is disabled')
                     metadata = self.client.get(filing.metadata_url)
                     metadata_source, _, _ = self.publication.publish(company, run_id, filing, metadata)
                     parsed_metadata = json_object(metadata)

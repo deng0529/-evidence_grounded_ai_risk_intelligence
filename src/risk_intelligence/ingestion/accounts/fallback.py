@@ -12,7 +12,7 @@ from .llm import Candidate, CandidateAdmissionError
 from .models import CanonicalConcept, SourceFinancialFact
 from .pdf import LABELS, MONTHS, PageText, Word, amount, rows
 
-ADMISSION_VERSION = 'located-financial-admission-v3'
+ADMISSION_VERSION = 'located-financial-admission-v4'
 COMPONENTS = {
     'TOTAL_ASSETS': {'fixed assets', 'tangible assets', 'intangible assets', 'current assets', 'investments'},
     'INTEREST_BEARING_DEBT': {'invoice discounting facility', 'invoice discounting', 'other loans',
@@ -35,6 +35,25 @@ def _normal(text: str) -> str:
 def page_lines(page: PageText) -> tuple[str, ...]:
     """Stable one-based line locators derive from persisted layout, not model output."""
     return tuple(' '.join(word.text for word in row) for row in rows(page))
+
+
+def _statement_context(page: PageText, before_row: int) -> str | None:
+    """Return one explicit financial-statement heading before the admitted row.
+
+    Column selection can establish where a candidate sits, but M4 scope requires
+    independently persisted heading provenance.  Never synthesize a COMPANY
+    heading from the requested candidate scope or from an unqualified title.
+    """
+    headings = []
+    for text in page_lines(page)[:before_row]:
+        normalized = _normal(text)
+        if re.fullmatch(
+            r'(?:company|group|consolidated) (?:balance sheet|statement of financial position)'
+            r'(?:\s+as at .*)?',
+            normalized,
+        ):
+            headings.append(text)
+    return headings[0] if len(headings) == 1 else None
 
 
 def select_evidence(pages: tuple[PageText, ...], targets: tuple[CanonicalConcept, ...]) -> tuple[str, tuple[PageText, ...]]:
@@ -214,6 +233,7 @@ def admit_candidate(candidate: Candidate, pages: tuple[PageText, ...], document_
         context_ref=f'page-{page.page}:rows-{candidate.row_start}-{candidate.row_end}:{period_end}',
         entity_identifier=company_number, entity_scheme='M2_DOCUMENT_LINEAGE', period=period,
         period_role='CURRENT' if period_end.year == max(int(w.text) for w in columns) else 'COMPARATIVE',
-        page=page.page, scale=scale, sign='-' if value < 0 else '+', transformation=transformation,
+        page=page.page, statement_context=_statement_context(page, header), scale=scale,
+        sign='-' if value < 0 else '+', transformation=transformation,
         extraction_method=ExtractionMethod.LLM_OCR_TEXT if page.method == ExtractionMethod.PDF_OCR_DETERMINISTIC
                           else ExtractionMethod.LLM_NATIVE_TEXT, parser_version=ADMISSION_VERSION)

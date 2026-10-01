@@ -9,12 +9,15 @@ from datetime import date
 from typing import Literal
 
 from risk_intelligence.domain.enums import (
+    AvailabilityStatus,
+    ConflictLevel,
+    ConflictResolution,
     CriticalTransformation,
     ExtractionMethod,
     SourceType,
 )
 from risk_intelligence.domain.facts import FinancialFact
-from risk_intelligence.domain.reliability import ReliabilityAssessment
+from risk_intelligence.domain.reliability import ConflictState, ReliabilityAssessment
 from risk_intelligence.domain.validation import ValidationReport
 from risk_intelligence.ingestion.accounts.mapping import default_registry
 from risk_intelligence.persistence.accounts_repository import AccountsRepository
@@ -163,7 +166,8 @@ class FinancialValidationService:
         registry = default_registry()
         mapping_version = str(lineage["mapping_version"])
 
-        if mapping_version == registry.version:
+        origin = str(lineage["origin"])
+        if origin == "DIRECT" and mapping_version == registry.version:
             if len(components) != 1:
                 raise IntegrityError(
                     "Direct deterministic normalization requires one source"
@@ -172,6 +176,17 @@ class FinancialValidationService:
                 canonical_fact_id=fact.financial_fact_id,
                 source=components[0],
                 method="DETERMINISTIC_MAPPING",
+                mapping_version=mapping_version,
+            )
+
+        # A derived canonical value is not a direct normalization of any one
+        # component. Its target meaning is checked by the subsequent persisted
+        # derivation-integrity/completeness rules, so do not misroute it through
+        # the one-source mapping contract.
+        if origin == "DERIVED":
+            return FinancialSemanticEvidence(
+                canonical_fact_id=fact.financial_fact_id,
+                method="DETERMINISTIC_DERIVATION",
                 mapping_version=mapping_version,
             )
 
@@ -233,12 +248,21 @@ class FinancialValidationService:
         analytical_scope: AnalyticalScope,
     ):
         provenance = self._provenance(fact)
-        lineage, components = self._lineage(fact)
-
         context = provenance.analytical_input(
             fact.company_number,
             assessment_date,
         )
+
+        # An unavailable canonical observation is itself a typed M3 outcome.
+        # It may intentionally have no source-component lineage because no
+        # financial value was admitted. Preserve that missingness for M4/M5
+        # instead of requiring fictitious normalization components. The generic
+        # validation engine will hard-exclude the unavailable input and frozen
+        # reliability therefore remains zero.
+        if fact.availability_status != AvailabilityStatus.AVAILABLE:
+            return context
+
+        lineage, components = self._lineage(fact)
 
         context = FinancialPeriodEvidence(
             source_facts=components,
@@ -325,10 +349,20 @@ class FinancialValidationService:
             for identity in competing_fact_ids
         )
 
-        conflict = classify_financial_conflict(
-            fact,
-            competitors,
-        )
+        if fact.availability_status == AvailabilityStatus.AVAILABLE:
+            conflict = classify_financial_conflict(
+                fact,
+                competitors,
+            )
+        else:
+            # Missingness records contain no admitted numeric observation to
+            # compare. Preserve their typed source failure; do not manufacture
+            # a resolved period/value conflict from evidence-free placeholders.
+            conflict = ConflictState(
+                level=ConflictLevel.NONE,
+                resolution=ConflictResolution.NONE,
+                reason="Unavailable financial observation has no admitted value conflict",
+            )
 
         # Conflict evidence can legitimately include a competing observation
         # that was not construction evidence for the selected fact.  Extend
@@ -393,7 +427,30 @@ class FinancialValidationService:
         )
 
         fact = result.fact
-        lineage, _ = self._lineage(fact)
+        lineage = self.accounts.get_observation_lineage(
+            fact.financial_fact_id
+        )
+        if lineage is None:
+            if fact.availability_status == AvailabilityStatus.AVAILABLE:
+                raise IntegrityError(
+                    "Canonical financial observation has no persisted lineage"
+                )
+            provenance_type = (
+                "DERIVED"
+                if fact.extraction_method == ExtractionMethod.DERIVED
+                else "DIRECT"
+            )
+            normalization_method = None
+            derivation_method = None
+        else:
+            lineage_record, _ = lineage
+            provenance_type = str(lineage_record["origin"])
+            normalization_method = str(lineage_record["mapping_version"])
+            derivation_method = (
+                str(lineage_record["derivation_version"])
+                if lineage_record["derivation_version"] is not None
+                else None
+            )
 
         self.validated.save_fact(
             validated_fact_id=validated_fact_id,
@@ -405,13 +462,9 @@ class FinancialValidationService:
             canonical_concept=fact.canonical_concept,
             analytical_scope=analytical_scope,
             availability_status=fact.availability_status,
-            provenance_type=str(lineage["origin"]),
-            normalization_method=str(lineage["mapping_version"]),
-            derivation_method=(
-                str(lineage["derivation_version"])
-                if lineage["derivation_version"] is not None
-                else None
-            ),
+            provenance_type=provenance_type,
+            normalization_method=normalization_method,
+            derivation_method=derivation_method,
             assessment=result.assessment,
         )
 

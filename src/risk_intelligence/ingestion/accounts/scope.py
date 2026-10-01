@@ -5,7 +5,7 @@ from typing import Literal
 
 SourceScope = Literal['COMPANY', 'GROUP', 'UNRESOLVED']
 SCOPE_VERSION = 'pdf-heading-scope-v1'
-SCOPE_PARSERS = frozenset(('pdf-table-v4', 'financial-statement-structure-v4'))
+SCOPE_PARSERS = frozenset(('pdf-table-v4', 'financial-statement-structure-v4', 'located-financial-admission-v4'))
 STATEMENT_HEADING = re.compile(
     r'(?:(company|group|consolidated) )?(?:balance sheet|statement of financial position)'
     r'(?:\s+as at .*)?', re.IGNORECASE)

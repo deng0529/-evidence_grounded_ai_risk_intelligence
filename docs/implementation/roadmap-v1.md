@@ -66,23 +66,15 @@ structured Turso handoff and report any required minimal extension before implem
 
 ## M5 → M6 interface
 
-M5 produces the final Low / High / Unknown belief distribution for each of
-G1.1, G1.2, G2.1, G2.2, G2.3, G3.1, F1.1, F1.2, F2.2, F2.3 and F3.1.
-These 11 final distributions are M6 input, identified by variable code and
-linked to the existing VariableResult records and assessment/model-version
-context defined in `docs/design-docs/data-dictionary-v1.md`. Each distribution
-is bounded in [0,1] and sums to 1 within the absolute tolerance defined in `docs/design-docs/er-aggregation-v1.md`, section 12.1.
-Required-data failure remains (Low, High, Unknown) = (0, 0, 1); the leaf is
-retained and its importance weight is not redistributed.
+M5 v1.2 produces final Low / High / Unknown belief distributions for the active
+registry: G1.1, G1.2, G2.2, F1.1, F2.2, F2.3. Financial leaves use the
+explicitly selected reporting year and never fall back across years. Required-data
+failure remains (0,0,1).
 
-M5 ends at these final leaf distributions and performs no indicator-level,
-domain-level or overall ER aggregation. M6 consumes them unchanged, applies
-the frozen importance weights and aggregates Variables → Indicators → Domains
-→ Overall, including frozen single-child pass-through. M6 must not recalculate
-source facts, financial ratios, governance metrics, leaf thresholds, evidence
-reliability or leaf belief distributions. S/E/V/C/r are not applied again by M6.
-This interface clarifies responsibility only; it introduces no schema or
-frozen-methodology change.
+M6 consumes these leaves unchanged. It aggregates the three Governance leaves with
+equal active-variable weights, the four Financial leaves with equal active-variable
+weights, then combines Governance/Financial at 0.40/0.60. UI group labels are not
+an intermediate mathematical layer in v1.2. M6 does not recompute M4/M5 outputs.
 
 See `docs/implementation/M5-risk-variable-leaf-belief-engine.md` and
 `docs/implementation/M6-hierarchical-er-aggregation-engine.md` for implementation acceptance criteria.
