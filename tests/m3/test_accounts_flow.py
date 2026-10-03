@@ -50,15 +50,15 @@ def test_m2_handoff_document_publication_source_canonical_and_reuse(tmp_path: Pa
         registry = FinancialMappingRegistry('synthetic-v1', (
             MappingRule(source_concept='{urn:synthetic:accounts:v1}NetAssets', canonical_concept='NET_ASSETS'),))
         service = AccountsIngestion(database, storage, documents, registry=registry)
-        first = service.ingest('ZZ000003', now.date(), 'm3-first')
+        first = service.ingest('ZZ000003', now.date(), 'm3-first', reporting_year=2025)
         assert first.status.value == 'COMPLETE'
-        expected_documents = min(filing_count, 2)
+        expected_documents = 1
         assert documents.calls == expected_documents * 2
         assert database.query("SELECT stopping_reason FROM accounts_run WHERE processing_run_id='m3-first'") == [
-            {'stopping_reason': 'THREE_CANDIDATE_PERIODS' if filing_count == 3 else 'M2_INPUTS_EXHAUSTED'}]
+            {'stopping_reason': 'EXACT_REPORTING_YEAR'}]
         counts = [len(database.query('SELECT * FROM ' + table)) for table in
                   ('raw_evidence','financial_source_fact','financial_observation_lineage')]
-        second = service.ingest('ZZ000003', now.date(), 'm3-second')
+        second = service.ingest('ZZ000003', now.date(), 'm3-second', reporting_year=2025)
         assert second.status == first.status
         assert documents.calls == expected_documents * 2
         assert counts == [len(database.query('SELECT * FROM ' + table)) for table in
@@ -71,7 +71,7 @@ def test_m2_handoff_document_publication_source_canonical_and_reuse(tmp_path: Pa
         for variable in ('G1.1','G1.2','G2.1','G2.2','G2.3','G3.1','F1.1','F1.2','F2.2','F2.3','F3.1'):
             assert variable in report
         assert 'TOTAL_ASSETS' in report and 'EXTRACTION_FAILED' in report
-        assert '-123400' in report and '2024-12-31' in report
+        assert '-123400' in report and '2025-12-31' in report
         from risk_intelligence.ingestion.accounts.processing import ProcessingCache
         from risk_intelligence.services.evidence_persistence import EvidencePersistence
         evidence = EvidencePersistence(database, storage)
@@ -91,7 +91,7 @@ def test_m2_handoff_document_publication_source_canonical_and_reuse(tmp_path: Pa
         # observation membership, including reused results and explicit NULLs.
         registry_v2 = FinancialMappingRegistry('synthetic-v2', registry.rules)
         AccountsIngestion(database, storage, documents, registry=registry_v2).ingest(
-            'ZZ000003', now.date(), 'm3-remapped')
+            'ZZ000003', now.date(), 'm3-remapped', reporting_year=2025)
         first_ids = {r['fact_id'] for r in database.query(
             "SELECT fact_id FROM accounts_run_fact WHERE processing_run_id='m3-first'")}
         reused_ids = {r['fact_id'] for r in database.query(
@@ -99,7 +99,7 @@ def test_m2_handoff_document_publication_source_canonical_and_reuse(tmp_path: Pa
         remapped_ids = {r['fact_id'] for r in database.query(
             "SELECT fact_id FROM accounts_run_fact WHERE processing_run_id='m3-remapped'")}
         assert first_ids == reused_ids and first_ids.isdisjoint(remapped_ids)
-        assert len(first_ids) == len(remapped_ids) == 12 * expected_documents
+        assert len(first_ids) == len(remapped_ids) == 6 * expected_documents
         assert documents.calls == expected_documents * 2
         assert readiness_report(database, 'm3-second') == report
         # A competing/reentrant worker cannot replay an outstanding external call.

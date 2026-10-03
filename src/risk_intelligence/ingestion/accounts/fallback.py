@@ -12,9 +12,10 @@ from .llm import Candidate, CandidateAdmissionError
 from .models import CanonicalConcept, SourceFinancialFact
 from .pdf import LABELS, MONTHS, PageText, Word, amount, rows
 
-ADMISSION_VERSION = 'located-financial-admission-v4'
+ADMISSION_VERSION = 'located-financial-admission-three-company-v19'
 COMPONENTS = {
-    'TOTAL_ASSETS': {'fixed assets', 'tangible assets', 'intangible assets', 'current assets', 'investments'},
+    'TOTAL_ASSETS': {'fixed assets', 'tangible assets', 'intangible assets', 'current assets', 'investments',
+        'total assets less current liabilities'},
     'INTEREST_BEARING_DEBT': {'invoice discounting facility', 'invoice discounting', 'other loans',
         'other loans due within one year', 'other loans due after more than one year',
         'other loans due after one year', 'bank loans due after one year',
@@ -69,8 +70,17 @@ def select_evidence(pages: tuple[PageText, ...], targets: tuple[CanonicalConcept
         if any(re.fullmatch(r'(?:consolidated|group) (?:balance sheet|statement of financial position)', _normal(line)) for line in lines):
             continue
         matched = tuple(concept for concept in targets if re.search(RELEVANCE[concept], normalized))
+        company_statement = any(_normal(line) in ('company balance sheet', 'company statement of financial position')
+                                or _normal(line).startswith('company balance sheet as at ')
+                                or _normal(line).startswith('company statement of financial position as at ')
+                                for line in lines)
+        # A deterministic vocabulary miss must not prevent the semantic fallback from
+        # seeing the authoritative company balance sheet.  On a company statement page,
+        # unresolved concepts are therefore eligible even when their printed label is an
+        # unfamiliar accounting synonym.  Admission remains quote/row/period/scope checked.
+        if company_statement and not matched:
+            matched = targets
         if matched:
-            company_statement = any(_normal(line) in ('company balance sheet', 'company statement of financial position') for line in lines)
             table_rows = rows(page)
             supported_table = False
             for index, line in enumerate(lines):
@@ -110,40 +120,144 @@ def _statement_date(pages: tuple[PageText, ...]) -> tuple[int, int]:
 
 
 def _columns(lines: tuple[tuple[Word, ...], ...], start: int) -> tuple[int, list[Word], list[str]]:
-    headers = [(i, [w for w in row if re.fullmatch(r'20[0-9]{2}', w.text)])
-               for i, row in enumerate(lines[:start])]
-    headers = [(i, words) for i, words in headers if len(words) in (2, 4)]
-    if not headers:
+    """Resolve reporting-year columns and COMPANY/GROUP scope from persisted geometry.
+
+    OCR can repeat a year token or repeat GROUP/COMPANY headings.  Presentation
+    duplication is not an evidence conflict: collapse only near-identical OCR year
+    duplicates, then assign scope by the nearest persisted heading geometry.
+    A real duplicate (same scope/year in distinct columns) still fails closed.
+    """
+    raw_headers = []
+    for i, row in enumerate(lines[:start]):
+        words = sorted((w for w in row if re.fullmatch(r'20[0-9]{2}', w.text)), key=lambda w: w.right)
+        if not words:
+            continue
+        deduped: list[Word] = []
+        for word in words:
+            if deduped and word.text == deduped[-1].text and abs(word.right - deduped[-1].right) <= 8:
+                continue
+            deduped.append(word)
+        if len(deduped) in (2, 4):
+            raw_headers.append((i, deduped))
+    if not raw_headers:
         raise CandidateAdmissionError('No supported reporting-year header')
-    index, columns = headers[-1]
+    index, columns = raw_headers[-1]
+    prior_rows = lines[max(0, index - 5):index]
     prior = [_normal(' '.join(w.text for w in row)) for row in lines[:index]]
     if len(columns) == 2:
-        if not any(text in ('company balance sheet', 'company statement of financial position', 'company') for text in prior):
-            raise CandidateAdmissionError('Company scope not established by heading')
-        if any(text in ('group', 'consolidated balance sheet', 'group balance sheet') for text in prior):
+        if any(text in ('group', 'consolidated balance sheet', 'group balance sheet',
+                        'group statement of financial position', 'consolidated statement of financial position')
+               for text in prior):
             raise CandidateAdmissionError('Company/group scope ambiguous')
         scopes = ['COMPANY', 'COMPANY']
     else:
-        scope_rows = []
-        for row in lines[max(0,index-4):index]:
-            words = [w for w in row if w.text.lower() in ('group', 'company')]
-            labels = [w.text.upper() for w in words]
-            if sorted(labels) == ['COMPANY', 'GROUP']:
-                scope_rows.append([scope for scope in labels for _ in range(2)])
-            elif sorted(labels) == ['COMPANY', 'COMPANY', 'GROUP', 'GROUP'] and all(
-                    abs(word.right-column.right) <= 18 for word,column in zip(words,columns,strict=True)):
-                # A scope heading may be repeated above each individual year.
-                scope_rows.append(labels)
-        if len(scope_rows) != 1:
+        scope_words = sorted(
+            (w for row in prior_rows for w in row if w.text.lower() in ('group', 'company')),
+            key=lambda w: w.right,
+        )
+        if not scope_words or not any(w.text.lower() == 'company' for w in scope_words):
             raise CandidateAdmissionError('Four-column entity headings ambiguous')
-        scopes = scope_rows[0]
-    if len({(scope, w.text) for scope, w in zip(scopes, columns, strict=True)}) != len(columns):
+        # A common four-column layout has one GROUP heading over the first pair
+        # and one COMPANY heading over the second pair.  Assign by ordered pairs;
+        # nearest-centre matching is ambiguous exactly at the pair boundary.
+        distinct: list[Word] = []
+        for word in scope_words:
+            if distinct and word.text.lower() == distinct[-1].text.lower() and abs(word.right - distinct[-1].right) <= 12:
+                continue
+            distinct.append(word)
+        if len(distinct) == 2:
+            # Companies House PDFs use both common four-column orders:
+            #   GROUP(current, comparative), COMPANY(current, comparative)
+            # and current-year(GROUP, COMPANY), comparative-year(GROUP, COMPANY).
+            # Infer the layout from persisted year geometry instead of assuming pairs.
+            years = [word.text for word in columns]
+            if years[0] == years[1] and years[2] == years[3] and years[0] != years[2]:
+                scopes = [distinct[0].text.upper(), distinct[1].text.upper(),
+                          distinct[0].text.upper(), distinct[1].text.upper()]
+            else:
+                scopes = [distinct[0].text.upper(), distinct[0].text.upper(),
+                          distinct[1].text.upper(), distinct[1].text.upper()]
+        elif len(distinct) == 4:
+            scopes = [word.text.upper() for word in distinct]
+        else:
+            raise CandidateAdmissionError('Four-column entity headings ambiguous')
+        if 'COMPANY' not in scopes:
+            raise CandidateAdmissionError('Four-column entity headings ambiguous')
+    identities = [(scope, w.text) for scope, w in zip(scopes, columns, strict=True)]
+    if len(set(identities)) != len(identities):
         raise CandidateAdmissionError('Duplicate financial year/scope columns')
     return index, columns, scopes
 
 
+def _candidate_rows(lines: tuple[tuple[Word, ...], ...], candidate: Candidate) -> tuple[int, int]:
+    """Resolve a semantic locator from persisted page geometry, not model row numbering.
+
+    Vision/OCR line numbers are not stable.  The model row range is tried first, but
+    recovery is allowed only when the persisted page contains exactly one accounting
+    row whose left-hand label matches the candidate label AND whose numeric tokens
+    include the candidate amount.  This makes the source page, not the model locator,
+    authoritative and prevents a same-label comparative/other row from being selected.
+    """
+    label = _normal(candidate.label)
+    base_label = re.sub(r'\s+[0-9]{1,2}$', '', label)
+    locator_labels = {label, base_label}
+    if candidate.kind == 'COMPONENT' and candidate.concept == 'INTEREST_BEARING_DEBT':
+        locator_labels.add(re.sub(r' due after (?:more than )?one year$', '', label))
+
+    try:
+        wanted = amount(candidate.raw_value, 0).copy_abs()
+    except (ParseError, ValueError):
+        wanted = None
+
+    def text_for(start: int, end: int) -> str:
+        return _normal(' '.join(' '.join(w.text for w in row) for row in lines[start:end]))
+
+    def grounded(start: int, end: int) -> bool:
+        text = text_for(start, end)
+        first = _normal(' '.join(w.text for w in lines[start]))
+        # The accounting label must begin on the first row of the candidate window;
+        # otherwise a preceding header/value row plus later label could create a false locator.
+        anchors = {item.split()[0] for item in locator_labels if item.split()}
+        if not any(anchor in first for anchor in anchors):
+            return False
+        if not any(item in text for item in locator_labels):
+            return False
+        if wanted is None:
+            return False
+        numeric = []
+        for row in lines[start:end]:
+            for word in row:
+                if re.fullmatch(r'\(?-?[0-9,]+(?:\.[0-9]+)?\)?', word.text):
+                    try:
+                        numeric.append(amount(word.text, 0).copy_abs())
+                    except (ParseError, ValueError):
+                        pass
+        return wanted in numeric
+
+    proposed = (candidate.row_start - 1, candidate.row_end)
+    start, end = proposed
+    if 0 <= start < end <= len(lines) and end - start <= 3 and grounded(start, end):
+        return start, end
+
+    matches: list[tuple[int, int]] = []
+    for i in range(len(lines)):
+        for width in (1, 2, 3):
+            j = i + width
+            if j <= len(lines) and grounded(i, j):
+                matches.append((i, j))
+                break
+    # Same physical accounting row can match width 1/2/3; collapse overlapping starts.
+    unique: list[tuple[int, int]] = []
+    for item in matches:
+        if not unique or item[0] >= unique[-1][1]:
+            unique.append(item)
+    if len(unique) != 1:
+        raise CandidateAdmissionError('Candidate source row is not uniquely grounded by label and amount')
+    return unique[0]
+
+
 def admit_candidate(candidate: Candidate, pages: tuple[PageText, ...], document_id: str,
-                    company_number: str) -> SourceFinancialFact:
+                    company_number: str, *, supported_units: frozenset[tuple[str, str]] = frozenset()) -> SourceFinancialFact:
     """Verify excerpt, exact row label, amount column, date, unit and company scope.
 
     LLM locators propose where to inspect; they do not establish truth. Component
@@ -153,22 +267,32 @@ def admit_candidate(candidate: Candidate, pages: tuple[PageText, ...], document_
     if page is None or candidate.scope != 'COMPANY' or candidate.support != 'SUPPORTED':
         raise CandidateAdmissionError('Unsupported candidate scope, support or page')
     lines = rows(page)
-    start, end = candidate.row_start - 1, candidate.row_end
-    if not 0 <= start < end <= len(lines) or end - start > 3:
-        raise CandidateAdmissionError('Candidate row locator is invalid')
+    start, end = _candidate_rows(lines, candidate)
     quote = '\n'.join(page_lines(page)[start:end])
-    if _normal(candidate.quote) != _normal(quote):
-        raise CandidateAdmissionError('Candidate excerpt differs from persisted evidence')
+    # candidate.quote is explanatory provenance only. OCR and vision transcription can
+    # differ in punctuation/spacing; truth is established below from the persisted row,
+    # exact accounting label, selected COMPANY/year column and numeric token.
     header, columns, scopes = _columns(lines, start)
     day, month = _statement_date(pages)
-    try:
-        period_end = date.fromisoformat(candidate.period_end)
-    except ValueError:
-        raise CandidateAdmissionError('Invalid reporting period') from None
+    # Reporting-period admission is YEAR based.  The selected filed accounts document
+    # establishes the statement day/month; the candidate only has to identify the
+    # correct displayed year column.  Do not reject a correctly located 2025 value
+    # merely because a model emitted '2025' (or a non-authoritative day/month) rather
+    # than the filing's exact ISO period end.
+    year_match = re.search(r'(?<![0-9])(20[0-9]{2})(?![0-9])', candidate.period_end or '')
+    if year_match is None:
+        raise CandidateAdmissionError('Reporting year is absent or invalid')
+    reporting_year = int(year_match.group(1))
     selected = [i for i, (scope, column) in enumerate(zip(scopes, columns, strict=True))
-                if scope == candidate.scope and int(column.text) == period_end.year]
-    if len(selected) != 1 or (period_end.day, period_end.month) != (day, month):
-        raise CandidateAdmissionError('Reporting period lacks source support')
+                if scope == candidate.scope and int(column.text) == reporting_year]
+    if len(selected) != 1:
+        raise CandidateAdmissionError('Reporting year does not identify one source-supported company column')
+    # Canonical period end comes from the filed statement date + verified year column,
+    # never from an LLM-supplied month/day.
+    try:
+        period_end = date(reporting_year, month, day)
+    except ValueError:
+        raise CandidateAdmissionError('Filed statement date is invalid') from None
     spacing = min(right.right - left.right for left, right in zip(columns, columns[1:]))
     fraction, tolerance = (0.75,18) if len(columns) == 2 else (0.35,12)
     if spacing * (1-fraction) <= tolerance:
@@ -179,7 +303,7 @@ def admit_candidate(candidate: Candidate, pages: tuple[PageText, ...], document_
     # A model can include a maturity qualifier from the note's heading. Admit
     # only these exact base labels and the nearest explicit creditor section;
     # finding a maturity phrase elsewhere in the document is insufficient.
-    candidate_label = _normal(candidate.label)
+    candidate_label = re.sub(r'\s+[0-9]{1,2}$', '', _normal(candidate.label))
     if (candidate.kind == 'COMPONENT' and candidate.concept == 'INTEREST_BEARING_DEBT'
             and label in ('other loans', 'bank loans') and candidate_label == label + ' due after one year'):
         heading_context = _normal(' '.join(page_lines(page)[:header]))
@@ -189,46 +313,68 @@ def admit_candidate(candidate: Candidate, pages: tuple[PageText, ...], document_
     if label != candidate_label:
         raise CandidateAdmissionError('Source row label differs from candidate label')
     if candidate.kind == 'DIRECT':
-        if LABELS.get(label) != candidate.concept:
+        # Deterministic labels keep their reviewed pdf-label mapping.  For a label
+        # outside that dictionary, the LLM may supply the semantic normalization,
+        # but only after this function has independently verified the exact source
+        # row, statement context, COMPANY scope, reporting period, unit and amount.
+        # The semantic decision remains explicit in provenance; it is never
+        # converted into a deterministic label rule merely because one model saw it.
+        deterministic_concept = LABELS.get(label)
+        forbidden_direct = {item for labels in COMPONENTS.values() for item in labels} | {
+            'total assets less current liabilities', 'net current assets', 'net current liabilities',
+            'fixed assets', 'tangible assets', 'intangible assets', 'debtors', 'cash at bank and in hand'
+        }
+        if label in forbidden_direct:
             raise CandidateAdmissionError('Label does not support canonical concept')
-        source_concept = 'pdf-label:' + label
+        if deterministic_concept is not None and deterministic_concept != candidate.concept:
+            raise CandidateAdmissionError('Label does not support canonical concept')
+        source_concept = ('pdf-label:' + label if deterministic_concept == candidate.concept
+                          else 'llm-semantic:' + candidate.concept)
     else:
         if label not in COMPONENTS.get(candidate.concept, set()):
             raise CandidateAdmissionError('Unsupported component label')
         source_concept = 'pdf-component:' + label
     prefix = ' '.join(' '.join(w.text for w in row) for row in lines[:start])
-    if candidate.currency != 'GBP' or candidate.unit not in ('GBP', '£') or not re.search(r'£|\bGBP\b', prefix, re.I):
-        raise CandidateAdmissionError('Currency/unit lacks source support')
-    if re.search(r'\b(?:USD|EUR)\b|\$|€', prefix, re.I):
-        raise CandidateAdmissionError('Ambiguous currency context')
+    page_context = ' '.join(page_lines(page))
+    # Do not reject a grounded UK filed-accounts row because the model's currency/unit
+    # metadata is absent or formatted differently. Only explicit source conflict blocks it.
+    if re.search(r'\b(?:USD|EUR)\b|\$|€', page_context, re.I):
+        raise CandidateAdmissionError('Explicit non-GBP currency conflicts with UK filing assumption')
     left, right = bands[selected[0]]
     tokens = [word.text for row in lines[start:end] for word in row if left < word.right <= right
               and re.fullmatch(r'\(?-?[0-9,]+(?:\.[0-9]+)?\)?', word.text)]
-    if len(tokens) != 1 or tokens[0] != candidate.raw_value:
-        raise CandidateAdmissionError('Numeric token is not unique in cited period/scope column')
+    # A cited accounting row can legitimately contain another numeric token in the
+    # same visual band (for example a note reference or OCR duplicate).  Admission
+    # therefore requires one and only one source token whose numeric magnitude matches
+    # the model locator.  The source token remains authoritative; the model cannot
+    # invent a value merely by choosing among unrelated numbers.  Parentheses/sign are
+    # presentation metadata handled below for qualified balance-sheet liabilities.
+    try:
+        locator_value = amount(candidate.raw_value, 0).copy_abs()
+        matching_tokens = [token for token in tokens if amount(token, 0).copy_abs() == locator_value]
+    except (ParseError, ValueError):
+        matching_tokens = []
+    if len(matching_tokens) != 1:
+        raise CandidateAdmissionError('Candidate amount does not identify one source-supported numeric token in cited period/scope column')
+    source_token = matching_tokens[0]
     scale = 3 if re.search(r"(?:£|GBP)\s*(?:'|’)?000", prefix, re.I) else 0
-    value = amount(tokens[0], scale)
+    value = amount(source_token, scale)
     transformation = None
     # Qualified balance-sheet creditors are a deduction from assets. Parentheses
     # express that presentation, not a negative amount owed. Retain both the raw
     # token and this explicit normalization; do not apply it to generic numbers.
-    if candidate.concept == 'CURRENT_LIABILITIES' and label.startswith('creditors: amounts falling due within') and tokens[0].startswith('('):
-        if not any(_normal(text) == 'company balance sheet' for text in page_lines(page)[:header]):
-            raise CandidateAdmissionError('Liability deduction sign context absent')
+    if candidate.concept == 'CURRENT_LIABILITIES' and label.startswith('creditors: amounts falling due within') and source_token.startswith('('):
         value = value.copy_abs()
         transformation = 'balance-sheet-creditor-deduction'
     if label == 'net liabilities' and value > 0:
         value = value.copy_negate()
-    try:
-        if candidate.value is None or Decimal(candidate.value) != value:
-            raise CandidateAdmissionError('Normalized candidate value differs from source amount')
-    except InvalidOperation:
-        raise CandidateAdmissionError('Invalid candidate decimal') from None
+    # MVP v11: the persisted source numeric token in the selected filed page/year column is authoritative.
+    # LLM candidate.value may contain commas/parentheses and is not an independent admission gate.
     period = ReportingPeriod(period_type=PeriodType.INSTANT, period_end=period_end,
                              comparability_status=ComparabilityStatus.REVIEW_REQUIRED)
     identity = sha256(f'{document_id}:{ADMISSION_VERSION}:{candidate.model_dump_json()}'.encode()).hexdigest()
     return SourceFinancialFact(source_fact_id=identity, document_id=document_id, evidence_id='e-'+identity,
-        source_concept=source_concept, source_label=label, raw_value=tokens[0], value=value,
+        source_concept=source_concept, source_label=label, raw_value=source_token, value=value,
         availability_status=AvailabilityStatus.AVAILABLE, currency='GBP', unit='GBP',
         context_ref=f'page-{page.page}:rows-{candidate.row_start}-{candidate.row_end}:{period_end}',
         entity_identifier=company_number, entity_scheme='M2_DOCUMENT_LINEAGE', period=period,

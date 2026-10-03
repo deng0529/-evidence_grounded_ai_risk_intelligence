@@ -179,3 +179,39 @@ def test_structural_source_uses_its_own_page_context_not_anchor_scope() -> None:
     assert component.parser_version == STRUCTURE_VERSION
     assert component.statement_context == 'Balance sheet' and component.source_scope == 'UNRESOLVED'
     assert component.page == 2 and component.value == Decimal('-500')
+
+@pytest.mark.parametrize('year', [2023, 2024, 2025, 2026])
+def test_reviewed_annual_frc_core_namespaces_map_exactly(year: int) -> None:
+    """Annual FRC namespace changes must not turn exact core facts into missing facts."""
+    fact = extract_pdf((headed('Company balance sheet'),), 'd', 'ZZ000003').facts[0]
+    fact = fact.model_copy(update={
+        'source_concept': f'{{http://xbrl.frc.org.uk/fr/{year}-01-01/core}}NetAssetsLiabilities',
+        'dimensions': (),
+    })
+    mapped = default_registry().map(fact, company_id='c', company_number='ZZ000003',
+                                    source_id='s', processing_run_id='r')
+    assert mapped is not None
+    assert mapped.canonical_concept == 'NET_ASSETS'
+    assert mapped.value_numeric == fact.value
+    assert default_registry().version == 'financial-concepts-v4'
+
+
+def test_reviewed_frc_stocks_maps_to_inventory() -> None:
+    from datetime import date
+    from decimal import Decimal
+    from risk_intelligence.domain.enums import AvailabilityStatus, ComparabilityStatus, ExtractionMethod, PeriodType
+    from risk_intelligence.domain.facts import ReportingPeriod
+    from risk_intelligence.ingestion.accounts.models import SourceFinancialFact
+    registry = default_registry()
+    fact = SourceFinancialFact(source_fact_id='stocks-source', document_id='d', evidence_id='e',
+        source_concept='{http://xbrl.frc.org.uk/fr/2025-01-01/core}Stocks', raw_value='4048511',
+        value=Decimal('4048511'), availability_status=AvailabilityStatus.AVAILABLE,
+        currency='GBP', unit='GBP', unit_ref='GBP', context_ref='c', entity_identifier='SC137690',
+        entity_scheme='test', period=ReportingPeriod(period_type=PeriodType.INSTANT,
+            period_end=date(2025,9,30), comparability_status=ComparabilityStatus.REVIEW_REQUIRED),
+        period_role='CURRENT', extraction_method=ExtractionMethod.IXBRL_DIRECT,
+        parser_version='test')
+    mapped = registry.map(fact, company_id='c', company_number='SC137690', source_id='s', processing_run_id='r')
+    assert mapped is not None
+    assert mapped.canonical_concept == 'INVENTORY'
+    assert mapped.value_numeric == Decimal('4048511')

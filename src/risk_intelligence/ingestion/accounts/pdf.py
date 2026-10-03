@@ -201,6 +201,9 @@ def extract_pdf(pages: tuple[PageText, ...], document_id: str, company_number: s
             for column, values in zip(columns, values_by_column, strict=True):
                 raw = values[0].text
                 value = amount(raw, scale)
+                if label in ('creditors: amounts falling due within one year',
+                             'creditors: amounts falling due within 1 year', 'current liabilities') and raw.startswith('('):
+                    value = value.copy_abs()
                 if label == 'net liabilities' and value > 0:
                     value = value.copy_negate()
                 period = ReportingPeriod(period_type=PeriodType.INSTANT,
@@ -232,3 +235,38 @@ def extract_pdf(pages: tuple[PageText, ...], document_id: str, company_number: s
     # A parsed table is not proof that all notes were adequately searched for debt.
     return ExtractionResult(facts=tuple(facts), periods=tuple(periods.values()), complete=False, debt_schedules=tuple(schedules),
                             reason='Balance-sheet rows extracted; disclosure completeness requires notes coverage')
+
+
+def pdf_document_kind(content: bytes) -> str:
+    """Classify the filed PDF before extraction: NATIVE_TEXT, SCANNED, or MIXED."""
+    import pymupdf
+    if not content.startswith(b'%PDF-'):
+        raise ParseError('Unsupported PDF content')
+    try:
+        with pymupdf.open(stream=content, filetype='pdf') as document:
+            kinds=[]
+            for page in document:
+                words=page.get_text('words')
+                image_coverage=sum(abs(rect.width*rect.height) for image in page.get_images()
+                    for rect in page.get_image_rects(image[0]))/max(1,page.rect.width*page.rect.height)
+                kinds.append('SCANNED' if len(words)<15 or image_coverage>0.6 else 'NATIVE_TEXT')
+            if kinds and all(k=='SCANNED' for k in kinds): return 'SCANNED'
+            if any(k=='SCANNED' for k in kinds): return 'MIXED'
+            return 'NATIVE_TEXT'
+    except ParseError: raise
+    except Exception:
+        raise ParseError('PDF type detection failed') from None
+
+def render_pdf_pages(content: bytes, page_numbers: tuple[int, ...], dpi: int = 130) -> tuple[tuple[int, bytes], ...]:
+    """Render bounded filed pages for multimodal extraction."""
+    import pymupdf
+    try:
+        with pymupdf.open(stream=content, filetype='pdf') as document:
+            out=[]
+            matrix=pymupdf.Matrix(dpi/72, dpi/72)
+            for page_no in page_numbers[:30]:
+                if 1 <= page_no <= len(document):
+                    out.append((page_no, document[page_no-1].get_pixmap(matrix=matrix, alpha=False).tobytes('png')))
+            return tuple(out)
+    except Exception:
+        raise ParseError('PDF page rendering failed') from None

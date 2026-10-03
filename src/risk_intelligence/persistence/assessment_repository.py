@@ -80,6 +80,20 @@ class SqlAssessmentRepository:
                                    (assessment_id,))
         return int(rows[0]["reporting_year"]) if rows else None
 
+    def save_financial_evidence_year(self, assessment_id: str, evidence_reporting_year: int) -> None:
+        """Persist the reporting year actually selected by M3 evidence."""
+        if not 1900 <= evidence_reporting_year <= 9999:
+            raise ValueError("evidence_reporting_year must be a four-digit year")
+        with self.database.transaction():
+            insert_immutable(self.database, "assessment_financial_evidence_context", "assessment_id",
+                             {"assessment_id": assessment_id, "evidence_reporting_year": evidence_reporting_year})
+
+    def get_financial_evidence_year(self, assessment_id: str) -> int | None:
+        rows = self.database.query(
+            "SELECT evidence_reporting_year FROM assessment_financial_evidence_context WHERE assessment_id=?",
+            (assessment_id,))
+        return int(rows[0]["evidence_reporting_year"]) if rows else None
+
     def get_processing_run(self, processing_run_id: str) -> ProcessingRun | None:
         """Return persisted run metadata for inspection, without running a workflow."""
         rows = self.database.query("SELECT * FROM processing_run WHERE processing_run_id=?", (processing_run_id,))

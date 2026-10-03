@@ -133,21 +133,32 @@ def test_supported_llm_candidate_admitted_without_trusting_model_value() -> None
         (candidate_page(),),'d','ZZ000003').value == fact.value
 
 
-def test_invented_llm_number_and_missing_quote_rejected() -> None:
+def test_invented_llm_source_token_rejected_but_quote_is_non_authoritative() -> None:
+    # The persisted PDF/OCR token is authoritative. A model cannot invent a raw token,
+    # while quote punctuation/spacing is explanatory provenance and need not match OCR.
     with pytest.raises(ParseError):
         admit_candidate(candidate('999'), (candidate_page(),), 'd', 'ZZ000003')
-    with pytest.raises(ParseError):
-        admit_candidate(candidate().model_copy(update={'quote':'100 appears elsewhere'}),
-                        (candidate_page(),), 'd', 'ZZ000003')
+    fact = admit_candidate(candidate().model_copy(update={'quote':'vision transcription differs'}),
+                           (candidate_page(),), 'd', 'ZZ000003')
+    assert fact.value == Decimal(100) and fact.raw_value == '(100)'
 
 
 @pytest.mark.parametrize('change', [
-    {'scope':'GROUP'}, {'period_end':'2023-12-31'}, {'period_end':'2025-06-30'},
-    {'currency':'USD'}, {'value':'999'}, {'concept':'TOTAL_ASSETS'},
+    {'scope':'GROUP'}, {'period_end':'2023-12-31'}, {'concept':'TOTAL_ASSETS'},
 ])
-def test_candidate_context_must_be_independently_supported(change: dict) -> None:
+def test_candidate_source_identity_must_be_independently_supported(change: dict) -> None:
     with pytest.raises(ParseError):
         admit_candidate(candidate().model_copy(update=change), (candidate_page(),), 'd', 'ZZ000003')
+
+
+@pytest.mark.parametrize('change', [
+    {'period_end':'2025-06-30'}, {'currency':'USD'}, {'value':'999'},
+])
+def test_non_authoritative_model_metadata_does_not_override_grounded_source(change: dict) -> None:
+    fact = admit_candidate(candidate().model_copy(update=change), (candidate_page(),), 'd', 'ZZ000003')
+    assert fact.value == Decimal(100)
+    assert fact.period.period_end.isoformat() == '2025-12-31'
+    assert fact.currency == 'GBP' and fact.unit == 'GBP'
 
 
 def test_assets_less_liabilities_is_never_total_assets() -> None:
@@ -228,3 +239,48 @@ def test_official_sdk_request_uses_configured_model_and_structured_schema(monkey
     assert calls[0]['text']['format']['strict'] is True and calls[0]['store'] is False
     assert result['returned_model'] == 'configured-test-snapshot'
     assert 'synthetic' not in json.dumps(result)
+
+def test_semantic_llm_can_admit_verified_unlisted_accounting_label() -> None:
+    words = [Word(x=10.0,y=float(y),right=220.0,text=text) for y,text in
+             ((10,'Company balance sheet'),(20,'at 31 December 2025'),(30,'GBP'),
+              (60,'Property held for resale'))]
+    for y,right,text in ((40,310,'2025'),(40,410,'2024'),(60,310,'125'),(60,410,'80')):
+        words.append(Word(x=float(right-30),y=float(y),right=float(right),text=text))
+    page=PageText(page=3,words=tuple(words),method=ExtractionMethod.PDF_OCR_DETERMINISTIC)
+    item=Candidate(page=3,row_start=5,row_end=5,concept='INVENTORY',kind='DIRECT',scope='COMPANY',
+        support='SUPPORTED',label='Property held for resale',period_end='2025-12-31',currency='GBP',unit='GBP',
+        raw_value='125',value='125',quote=page_lines(page)[4])
+    fact=admit_candidate(item,(page,),'d','ZZ000003')
+    assert fact.source_concept == 'llm-semantic:INVENTORY'
+    from risk_intelligence.ingestion.accounts.mapping import default_registry
+    mapped=default_registry().map(fact,company_id='c',company_number='ZZ000003',source_id='s',processing_run_id='r')
+    assert mapped is not None and mapped.canonical_concept == 'INVENTORY' and mapped.value_numeric == Decimal(125)
+
+
+def test_semantic_locator_recovers_from_vision_ocr_row_number_drift() -> None:
+    drifted = candidate().model_copy(update={'row_start': 999, 'row_end': 999})
+    fact = admit_candidate(drifted, (candidate_page(),), 'd', 'ZZ000003')
+    assert fact.value == Decimal(100) and fact.raw_value == '(100)'
+
+
+def test_four_column_year_major_layout_resolves_company_column() -> None:
+    words = [Word(x=10.0,y=10.0,right=200.0,text='Company balance sheet'),
+             Word(x=10.0,y=15.0,right=200.0,text='at 31 December 2025'),
+             Word(x=10.0,y=20.0,right=200.0,text='GBP'),
+             Word(x=250.0,y=25.0,right=275.0,text='Group'),
+             Word(x=350.0,y=25.0,right=375.0,text='Company'),
+             Word(x=250.0,y=30.0,right=275.0,text='2025'),
+             Word(x=350.0,y=30.0,right=375.0,text='2025'),
+             Word(x=450.0,y=30.0,right=475.0,text='2024'),
+             Word(x=550.0,y=30.0,right=575.0,text='2024'),
+             Word(x=10.0,y=50.0,right=180.0,text='Stocks 7'),
+             Word(x=250.0,y=50.0,right=275.0,text='9,000'),
+             Word(x=350.0,y=50.0,right=375.0,text='4,048,511'),
+             Word(x=450.0,y=50.0,right=475.0,text='8,000'),
+             Word(x=550.0,y=50.0,right=575.0,text='3,000')]
+    page = PageText(page=5,words=tuple(words),method=ExtractionMethod.PDF_OCR_DETERMINISTIC)
+    item = candidate().model_copy(update={'page':5,'row_start':999,'row_end':999,
+        'concept':'INVENTORY','label':'Stocks 7','raw_value':'4,048,511','value':'4,048,511',
+        'period_end':'2025','quote':'vision row'})
+    fact = admit_candidate(item,(page,),'d','ZZ000003')
+    assert fact.value == Decimal(4048511)

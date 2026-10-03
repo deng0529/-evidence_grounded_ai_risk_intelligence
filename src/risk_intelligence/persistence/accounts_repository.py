@@ -91,9 +91,16 @@ class AccountsRepository:
 
     def reusable_document(self, filing: FilingInput) -> str | None:
         """Return an existing linked raw identity; caller must verify its bytes."""
+        # Reuse follows the same deterministic representation priority as live
+        # acquisition.  A prior failed iXBRL parse may have caused a PDF fallback
+        # to be published later; rowid order must not make that PDF shadow the
+        # now-supported iXBRL bytes on a later parser version.
         rows = self.database.query('SELECT r.raw_evidence_id FROM accounts_document a '
             'JOIN raw_evidence r ON r.document_id=a.document_id WHERE a.filing_fact_id=? '
-            'ORDER BY a.rowid DESC LIMIT 1', (filing.filing_fact_id,))
+            "ORDER BY CASE a.media_type WHEN 'application/xhtml+xml' THEN 0 "
+            "WHEN 'application/xml' THEN 1 WHEN 'text/xml' THEN 2 "
+            "WHEN 'application/pdf' THEN 3 ELSE 9 END, a.rowid DESC LIMIT 1",
+            (filing.filing_fact_id,))
         return text(rows[0]['raw_evidence_id']) if rows else None
 
     def save_interpretation(self, document_id: str, artifact_id: str,
@@ -122,11 +129,41 @@ class AccountsRepository:
             'llm_artifact_raw_id':decision.llm_artifact_id,'target_concept':proposal.target,
             'period_end':proposal.period_end.isoformat(),'method':proposal.method,'status':decision.status,
             'rule_version':proposal.version,'reason':decision.reason}
+        if decision.status == 'AVAILABLE' and proposal.method == 'LLM_SEMANTIC' and context is None:
+            raise IntegrityError('Accepted semantic normalization requires source context')
+        # Preflight every FK/CHECK participating in the Stage-8 immutable insert so
+        # a remote Turso constraint cannot collapse into an opaque provider error.
+        def _exists(table: str, column: str, value: str | None) -> bool:
+            return value is not None and bool(self.database.query(
+                f'SELECT 1 AS ok FROM {table} WHERE {column}=? LIMIT 1', (value,)))
+        if not _exists('document', 'document_id', document_id):
+            raise IntegrityError('Stage8 preflight: interpretation document is absent')
+        if not _exists('raw_evidence', 'raw_evidence_id', artifact_id):
+            raise IntegrityError('Stage8 preflight: interpretation artifact raw evidence is absent')
+        if decision.llm_artifact_id and not _exists('raw_evidence', 'raw_evidence_id', decision.llm_artifact_id):
+            raise IntegrityError('Stage8 preflight: LLM artifact raw evidence is absent')
+        if canonical_id and not _exists('fact', 'fact_id', canonical_id):
+            raise IntegrityError('Stage8 preflight: admitted canonical fact is absent')
+        if source_id and not _exists('financial_source_fact', 'source_fact_id', source_id):
+            raise IntegrityError('Stage8 preflight: semantic source fact is absent')
+        if decision.status == 'AVAILABLE' and canonical_id is None:
+            raise IntegrityError('Stage8 preflight: AVAILABLE interpretation lacks canonical fact')
+        if decision.status != 'AVAILABLE' and canonical_id is not None:
+            raise IntegrityError('Stage8 preflight: unavailable interpretation unexpectedly has canonical fact')
+        # Database.transaction() is nesting-aware: the outer _save_facts transaction
+        # owns BEGIN/COMMIT and nested repository transactions join it. Keep the
+        # interpretation and its required semantic support in the same atomic unit.
+        # This avoids a remote libSQL/Turso boundary where the parent row could be
+        # committed separately from the support row (or support could be checked
+        # against a partially published parent).
         with self.database.transaction():
-            insert_immutable(self.database, 'financial_interpretation', 'interpretation_id', row)
+            try:
+                insert_immutable(self.database, 'financial_interpretation', 'interpretation_id', row)
+            except IntegrityError:
+                raise
+            except Exception as error:
+                raise IntegrityError(f'Stage8 financial_interpretation insert failed: {error}') from None
             if decision.status == 'AVAILABLE' and proposal.method == 'LLM_SEMANTIC':
-                if context is None:
-                    raise IntegrityError('Accepted semantic normalization requires source context')
                 self.save_semantic_support(SemanticSupport(interpretation_id=identity,
                     rationale=proposal.rationale, context=context))
 
@@ -205,6 +242,18 @@ class AccountsRepository:
                     'WHERE fact_id=? ORDER BY position', (fact.financial_fact_id,)) != [
                         {'source_fact_id': identity} for identity in component_ids]:
                 raise IntegrityError('Immutable derived component links differ')
+
+    def save_normalization_audit(self, fact: FinancialFact, source: SourceFinancialFact,
+                                 normalization_version: str, rule: str) -> None:
+        """Persist the raw-to-canonical cleaning step without altering source evidence."""
+        if fact.value_numeric is None or not fact.currency or not fact.unit:
+            return
+        with self.database.transaction():
+            insert_immutable(self.database, 'financial_normalization_audit', 'fact_id', {
+                'fact_id': fact.financial_fact_id, 'source_fact_id': source.source_fact_id,
+                'normalization_version': normalization_version, 'raw_value': source.raw_value,
+                'normalized_value': encode(fact.value_numeric), 'currency': fact.currency,
+                'unit': fact.unit, 'scale': source.scale, 'rule': rule})
 
     def get_observation_lineage(
             self, fact_id: str

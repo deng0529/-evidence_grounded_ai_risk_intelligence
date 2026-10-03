@@ -174,7 +174,7 @@ def canonical(decision: InterpretationDecision, result: ExtractionResult, *, com
     if proposal.proof_id:
         proof = next(p for p in result.proofs if p.proof_id == proposal.proof_id)
         evidence += (proof.proof_id,) + tuple(by_id[i].evidence_id for i in proof.cross_check_ids)
-    identity = sha256(decision.model_dump_json().encode()).hexdigest()
+    identity = sha256((run_id + ':' + decision.model_dump_json()).encode()).hexdigest()
     return FinancialFact(financial_fact_id=identity, company_id=company_id, company_number=first.entity_identifier,
         canonical_concept=proposal.target, source_concept=first.source_concept if proposal.kind == 'NORMALIZATION' else 'evidence-grounded-expression',
         value_numeric=decision.value, currency=proposal.currency, unit=proposal.unit, period=first.period,

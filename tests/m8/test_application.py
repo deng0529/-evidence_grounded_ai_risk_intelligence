@@ -8,6 +8,7 @@ from streamlit.testing.v1 import AppTest
 
 from risk_intelligence.persistence.connection import IntegrityError, PersistenceError
 from risk_intelligence.services.application import AssessmentApplication, belief_row, error_message, variable_row
+from risk_intelligence.services.presentation import belief_display, variable_display
 from risk_intelligence.services.application_runtime import application_database
 from risk_intelligence.services.explanation import ExplanationService
 from tests.m2.conftest import NOW, NUMBER
@@ -125,6 +126,11 @@ def environment(monkeypatch,path):
     monkeypatch.setenv('RISK_UI_DATABASE_PATH',str(path))
 
 
+def load_existing_mode(at):
+    """M8 assessment tests explicitly enter the assessment workflow; Foundation is the MVP default."""
+    return at.radio[0].set_value('Load existing assessment').run()
+
+
 def test_readonly_runtime_and_missing_database_never_created(database,tmp_path):
     values={'RISK_UI_DATABASE_PATH':str(tmp_path/'m2.sqlite3')}
     with application_database(values) as reader:
@@ -139,32 +145,33 @@ def test_readonly_runtime_and_missing_database_never_created(database,tmp_path):
 
 def test_streamlit_load_and_trace_display_exact_persisted_values(database,assessed,tmp_path,monkeypatch):
     environment(monkeypatch,tmp_path/'m2.sqlite3')
-    at=AppTest.from_file(str(ENTRY),default_timeout=30).run()
+    at=load_existing_mode(AppTest.from_file(str(ENTRY),default_timeout=30).run())
     assert not at.exception and not at.error
     at.button[0].click().run()
     assert not at.exception and not at.error
-    assert at.dataframe[1].value.iloc[0].to_dict()==belief_row(assessed[1][-1].belief)
-    variables=at.dataframe[3].value
-    assert list(variables['Code'])==['G1.1','G1.2','G2.2','F1.1','F2.2','F2.3']
+    assert at.dataframe[0].value.iloc[0].to_dict()==belief_display(assessed[1][-1].belief)
+    variables=at.dataframe[2].value
+    assert 'Code' not in variables.columns
+    assert len(variables) == 6
     assert 'Unknown' in variables.columns
-    next(s for s in at.selectbox if s.label=='Variable').select('F1.1').run()
+    next(s for s in at.selectbox if s.label=='Variable').select(next(v.name for v in AssessmentApplication(database).load(assessed[0].assessment_id).explanation.variables if v.leaf.result.variable_code=='F1.1')).run()
     assert not at.exception and not at.error
-    assert any(e.label=='Source observations and canonical lineage' for e in at.expander)
+    assert any(e.label=='Technical audit details' for e in at.expander)
 
 
 def test_streamlit_empty_and_database_errors_have_no_traceback(database,tmp_path,monkeypatch):
     environment(monkeypatch,tmp_path/'m2.sqlite3')
-    at=AppTest.from_file(str(ENTRY),default_timeout=30).run()
+    at=load_existing_mode(AppTest.from_file(str(ENTRY),default_timeout=30).run())
     assert not at.exception and at.info
     environment(monkeypatch,tmp_path/'absent.sqlite3')
-    at=AppTest.from_file(str(ENTRY),default_timeout=30).run()
+    at=load_existing_mode(AppTest.from_file(str(ENTRY),default_timeout=30).run())
     assert not at.exception and at.error
-    assert at.error[0].value.startswith('DATABASE:')
+    assert at.error[0].value == error_message(PersistenceError()).message
 
 
 def test_streamlit_service_failure_clears_stale_view(database,assessed,tmp_path,monkeypatch):
     environment(monkeypatch,tmp_path/'m2.sqlite3')
-    at=AppTest.from_file(str(ENTRY),default_timeout=30).run()
+    at=load_existing_mode(AppTest.from_file(str(ENTRY),default_timeout=30).run())
     at.button[0].click().run()
     def fail(*args,**kwargs):
         raise RuntimeError('SYNTHETIC_PRIVATE_TOKEN')
@@ -184,12 +191,68 @@ def test_streamlit_new_assessment_reuses_real_production_runs(database, assessed
     next(w for w in at.text_input if w.label == 'Company number').set_value(NUMBER)
     at.date_input[0].set_value(NOW.date())
     next(w for w in at.number_input if w.label == 'Financial reporting year').set_value(2025)
-    next(w for w in at.selectbox if w.label == 'Evidence workflow').select('Reuse recorded ingestion runs')
-    next(w for w in at.text_input if w.label == 'M2 run ID (reuse only)').set_value(report.m2_run_id)
-    next(w for w in at.text_input if w.label == 'M3 run ID (reuse only)').set_value(report.m3_run_id)
+    assert [w.label for w in at.text_input] == ['Company number']
+    assert [w.label for w in at.number_input] == ['Financial reporting year']
     at.button[0].click().run()
     assert not at.exception and not at.error
     assert at.success
-    assert len(at.dataframe[3].value) == 6
-    assert len(AssessmentApplication(database).choices()) == 2
+    assert len(at.dataframe[2].value) == 6
+    assert len(AssessmentApplication(database).choices()) == 1
     assert database.query('PRAGMA foreign_key_check') == []
+
+
+def test_exact_context_reuse_never_substitutes_company_year_or_date(database, assessed):
+    from datetime import timedelta
+    application = AssessmentApplication(database)
+    view = application.existing(number=NUMBER, reporting_year=2025, assessment_date=NOW.date())
+    assert view is not None
+    assert application.existing(number='ZZ000003', reporting_year=2025, assessment_date=NOW.date()) is None
+    assert application.existing(number=NUMBER, reporting_year=2024, assessment_date=NOW.date()) is None
+    assert application.existing(number=NUMBER, reporting_year=2025, assessment_date=NOW.date()+timedelta(days=1)) is None
+
+
+def test_changing_reporting_year_clears_previous_result(database, assessed, storage, api, ixbrl, tmp_path, monkeypatch):
+    environment(monkeypatch, tmp_path / 'm2.sqlite3')
+    # A different reporting year requires its own valid M3 selection; a 2025 M3
+    # run must never be relabelled/reused as 2024.
+    shifted = ixbrl.replace(b'2024-12-31', b'2023-12-31').replace(b'2025-12-31', b'2024-12-31')
+    m2, m3, _ = services(database, storage, api, shifted)
+    AssessmentApplication(database).create(number=NUMBER, assessment_date=NOW.date(), reporting_year=2024,
+        run_id='other-year', calculated_at=NOW, m2=m2, m3=m3)
+    at = load_existing_mode(AppTest.from_file(str(ENTRY), default_timeout=30).run())
+    at.button[0].click().run()
+    assert at.dataframe
+    year = next(w for w in at.selectbox if w.label == 'Financial reporting year')
+    year.select(2025 if year.value == 2024 else 2024).run()
+    assert not at.exception and not at.error and not at.dataframe
+
+
+def test_summary_failure_keeps_supported_result(database, assessed, tmp_path, monkeypatch):
+    from risk_intelligence.ui import streamlit_app as ui
+    from risk_intelligence.services.narrative import NarrativeUnavailable
+    environment(monkeypatch, tmp_path / 'm2.sqlite3')
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic')
+    def fail(*args):
+        raise NarrativeUnavailable('synthetic secret must not appear')
+    monkeypatch.setattr(ui, 'generate_narrative', fail)
+    at = load_existing_mode(AppTest.from_file(str(ENTRY), default_timeout=30).run())
+    at.button[0].click().run()
+    next(b for b in at.button if b.label == 'Prepare evidence-grounded summary').click().run()
+    assert not at.exception and not at.error
+    assert len(at.dataframe[2].value) == 6
+    assert any('Summary assistance is unavailable' in item.value for item in at.info)
+
+
+def test_summary_cached_rerender_never_repeats_request(database, assessed, tmp_path, monkeypatch):
+    from risk_intelligence.ui import streamlit_app as ui
+    environment(monkeypatch, tmp_path / 'm2.sqlite3')
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic')
+    calls = []
+    def summary(*args):
+        calls.append(args); return ('Verified summary sentence.',)
+    monkeypatch.setattr(ui, 'generate_narrative', summary)
+    at = load_existing_mode(AppTest.from_file(str(ENTRY), default_timeout=30).run())
+    at.button[0].click().run()
+    next(b for b in at.button if b.label == 'Prepare evidence-grounded summary').click().run()
+    next(b for b in at.button if b.label == 'Prepare evidence-grounded summary').click().run()
+    assert not at.exception and not at.error and len(calls) == 1

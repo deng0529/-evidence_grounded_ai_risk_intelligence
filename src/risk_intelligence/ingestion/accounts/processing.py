@@ -25,6 +25,7 @@ class ProcessingCache:
 
     def __init__(self, database: Database, evidence: EvidencePersistence) -> None:
         self.database, self.evidence = database, evidence
+        self.force_fresh = False
 
     def run(self, raw: RawEvidence, run_id: str, stage: Literal['PARSE','OCR','LLM','CANONICAL'],
             version: str, config: dict[str, str | int], operation: Callable[[bytes], bytes]) -> tuple[bytes, bool]:
@@ -34,7 +35,7 @@ class ProcessingCache:
         uncertain external outcomes and explicitly change retry configuration.
         """
         identity = fingerprint(raw.checksum, stage + ':' + version,
-                               config | {'document_id': raw.document_id or raw.raw_evidence_id})
+                               config | {'document_id': raw.document_id or raw.raw_evidence_id} | ({'fresh_run_id': run_id} if self.force_fresh else {}))
         content = self.evidence.read(raw.raw_evidence_id)
         with self.database.transaction():
             existing = self.database.query('SELECT * FROM accounts_processing WHERE fingerprint=?', (identity,))

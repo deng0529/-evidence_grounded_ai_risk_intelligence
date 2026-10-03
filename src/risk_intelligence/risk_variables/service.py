@@ -28,10 +28,17 @@ class RiskVariableService:
             context = SqlAssessmentRepository(self.database).get_assessment(assessment_id)
             if context is None or context.risk_model_version not in MODEL_DEFINITIONS or context.reliability_model_version != "m4-reliability-v1":
                 raise IntegrityError("M5 requires an existing compatible assessment context")
-            reporting_year = (SqlAssessmentRepository(self.database).get_financial_reporting_year(assessment_id)
+            assessment_repository = SqlAssessmentRepository(self.database)
+            reporting_year = (assessment_repository.get_financial_reporting_year(assessment_id)
                               if context.risk_model_version in ("1.1", "1.2") else None)
+            evidence_reporting_year = (assessment_repository.get_financial_evidence_year(assessment_id)
+                                       if context.risk_model_version in ("1.1", "1.2") else None)
             if context.risk_model_version in ("1.1", "1.2") and reporting_year is None:
                 raise IntegrityError("MVP v1.1/v1.2 requires an explicit financial reporting year")
+            # Historical assessments predate explicit evidence-year provenance; they
+            # retain their original exact-year semantics. New runs always persist it.
+            if evidence_reporting_year is None:
+                evidence_reporting_year = reporting_year
             parameters = (context.company_id, context.assessment_date.isoformat())
             repository = ValidatedEvidenceRepository(self.database)
             facts = tuple(repository.get_fact(str(row["validated_fact_id"])) for row in self.database.query(
@@ -44,7 +51,7 @@ class RiskVariableService:
             for code in model_definitions(context.risk_model_version):
                 if code.startswith("F"):
                     calculation = calculate_financial(code, facts, company_id=context.company_id,
-                        company_number=context.company_number, scope=scope, assessment_date=context.assessment_date, reporting_year=reporting_year)
+                        company_number=context.company_number, scope=scope, assessment_date=context.assessment_date, reporting_year=evidence_reporting_year)
                 elif code in ("G1.1", "G1.2"):
                     calculation = calculate_lateness("ACCOUNTS" if code == "G1.1" else "CONFIRMATION_STATEMENT",
                         obligations, company_id=context.company_id, company_number=context.company_number,

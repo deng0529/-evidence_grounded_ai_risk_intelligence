@@ -32,7 +32,7 @@ def validate(provenance, source, semantic):
 def deterministic(provenance, source):
     provenance, source = grounded(provenance, source, 'Company balance sheet')
     semantic = FinancialSemanticEvidence(canonical_fact_id='f', source=source,
-        method='DETERMINISTIC_MAPPING', mapping_version='financial-concepts-v1')
+        method='DETERMINISTIC_MAPPING', mapping_version='financial-concepts-v4')
     return provenance, source, semantic
 
 

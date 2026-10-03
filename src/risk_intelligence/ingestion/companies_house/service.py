@@ -88,7 +88,7 @@ class CompaniesHouseIngestion:
         return Company(company_id="ch-" + number, company_number=number,
                        company_name=text(data.get("company_name"))), response
 
-    def ingest(self, number: str, assessment_date: date, run_id: str) -> IngestionResult:
+    def ingest(self, number: str, assessment_date: date, run_id: str, *, force_refresh: bool = False) -> IngestionResult:
         """Freeze scope; reuse fresh complete snapshots or refresh independent endpoints.
 
         A new company requires a successful, byte-preserved profile before its
@@ -117,7 +117,7 @@ class CompaniesHouseIngestion:
         snapshots: list[Snapshot] = []
         try:
             for resource in Resource:
-                previous = self.metadata.reusable(company.company_id, resource, started, start,
+                previous = None if force_refresh else self.metadata.reusable(company.company_id, resource, started, start,
                                                   assessment_date, self.policy.max_age[resource])
                 if previous is not None:
                     snapshot = replace(previous, snapshot_id=identity(run_id, resource.value),

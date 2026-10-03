@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
+import re
 from typing import Protocol, Self
 
 from risk_intelligence.config import Settings
@@ -70,12 +71,29 @@ class Database:
             raise IntegrityError("SQL parameters must use explicit exact scalar mappings")
         try:
             return self._connection.execute(sql, parameters)
-        except Exception:
-            # Driver exceptions may embed connection URLs, tokens or parameters.
-            # This is an error translation boundary, never catch-and-ignore.
+        except Exception as error:
+            # Surface only a bounded SQLite/libSQL constraint category. Never expose
+            # SQL text, parameter values, connection URLs, tokens, or credentials.
             if self._depth:
                 self._rollback_only = True
-            raise PersistenceError("Database statement failed; transaction or constraint was rejected") from None
+            raw = str(error)
+            safe = "provider rejected statement"
+            patterns = (
+                r"FOREIGN KEY constraint failed",
+                r"UNIQUE constraint failed(?:: [A-Za-z0-9_., ]+)?",
+                r"NOT NULL constraint failed(?:: [A-Za-z0-9_.]+)?",
+                r"CHECK constraint failed(?:: [A-Za-z0-9_()=\' -]+)?",
+                r"semantic support requires accepted semantic normalization",
+                r"immutable financial interpretation",
+                r"immutable semantic support",
+                r"retain semantic support",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, raw, flags=re.IGNORECASE)
+                if match:
+                    safe = match.group(0)
+                    break
+            raise PersistenceError(f"Database statement rejected [{type(error).__name__}: {safe}]") from None
 
     def query(self, sql: str, parameters: Sequence[SqlValue] = ()) -> list[Row]:
         """Return named scalar rows; callers must validate domain types explicitly."""

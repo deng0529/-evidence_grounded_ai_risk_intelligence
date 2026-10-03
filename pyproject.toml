@@ -25,6 +25,7 @@ dev = ["pytest==8.4.2"]
 where = ["src"]
 
 [tool.setuptools.package-data]
+"risk_intelligence.services" = ["config/*.yaml"]
 "risk_intelligence.persistence" = ["migrations/*.sql"]
 "risk_intelligence.risk_variables" = ["config/*.yaml"]
 

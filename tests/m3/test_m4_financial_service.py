@@ -193,10 +193,11 @@ def test_sql_pdf_fact_reaches_immutable_validated_fact(
             processing_run_id="r",
         )
 
+        from risk_intelligence.ingestion.accounts.mapping import default_registry
         accounts.save_direct(
             fact,
             "sf",
-            "financial-concepts-v1",
+            default_registry().version,
         )
 
         service = FinancialValidationService(db)
@@ -231,7 +232,7 @@ def test_sql_pdf_fact_reaches_immutable_validated_fact(
 
         # Direct deterministic mapping is retained explicitly.
         assert stored.provenance_type == "DIRECT"
-        assert stored.normalization_method == "financial-concepts-v1"
+        assert stored.normalization_method == default_registry().version
         assert stored.derivation_method is None
 
         # Frozen M4 versions.

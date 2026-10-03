@@ -36,3 +36,7 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local repair packages and source backups
+.repair_backup_*/
+v*pkg/

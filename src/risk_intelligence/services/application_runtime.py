@@ -7,6 +7,7 @@ import sqlite3
 from hashlib import sha256
 
 from risk_intelligence.config import Settings, load_settings
+from .model_config import load_model_configuration, RuntimeConfigurationError
 from risk_intelligence.ingestion.accounts.client import DocumentClient
 from risk_intelligence.ingestion.accounts.llm import OpenAIExtraction
 from risk_intelligence.ingestion.accounts.service import AccountsIngestion
@@ -38,6 +39,9 @@ def application_database(environ: Mapping[str, str], *, write: bool = False) -> 
     else:
         database = open_database(settings)
     with database:
+        if write:
+            from risk_intelligence.persistence.migrations import migrate
+            migrate(database)
         yield database
 
 
@@ -49,21 +53,29 @@ def ingestion_services(database: Database, settings: Settings, environ: Mapping[
     configuration-driven. No clients are constructed merely to view an assessment.
     """
     if settings.companies_house_api_key is None:
-        raise ValueError('Live ingestion requires Companies House configuration')
+        raise RuntimeConfigurationError('Live ingestion requires Companies House configuration')
+    configuration = load_model_configuration(environ)
     model = None
-    if enable_llm:
-        if not settings.openai_api_key or not settings.openai_extraction_model:
-            raise ValueError('LLM extraction configuration is incomplete')
-        model = OpenAIExtraction(settings.openai_api_key, settings.openai_extraction_model,
-                                 config_version=environ.get('RISK_LLM_CONFIG_VERSION', 'm8-extraction-v1'))
+    if enable_llm and settings.openai_api_key:
+        model = OpenAIExtraction(settings.openai_api_key, configuration.extraction_model,
+                                 config_version=configuration.version)
     tessdata = environ.get('RISK_OCR_TESSDATA') or None
+    # The repository ships the bounded English OCR model under the configured
+    # data directory.  Prefer an explicit override, otherwise use that local
+    # resource when present.  This does not download models or discover secrets.
+    if not tessdata:
+        bundled = settings.local_data_directory / 'tessdata'
+        if (bundled / 'eng.traineddata').is_file():
+            tessdata = str(bundled)
     ocr_version = 'disabled'
     if tessdata:
         trained = Path(tessdata) / 'eng.traineddata'
+        if not trained.is_file():
+            raise RuntimeConfigurationError('Configured OCR tessdata is missing eng.traineddata')
         ocr_version = 'pymupdf-1.28.2-eng-' + sha256(trained.read_bytes()).hexdigest()
     storage = (R2Storage.from_settings(settings) if settings.evidence_storage_backend == 'r2'
                else LocalStorage(settings.local_data_directory / 'raw'))
     m2 = CompaniesHouseIngestion(database, storage, CompaniesHouseClient(HttpTransport(settings.companies_house_api_key)))
-    m3 = AccountsIngestion(database, storage, DocumentClient(settings.companies_house_api_key),
+    m3 = AccountsIngestion(database, storage, DocumentClient(settings.companies_house_api_key, download_hosts=configuration.download_hosts),
                           tessdata=tessdata, ocr_version=ocr_version, llm=model)
     return m2, m3

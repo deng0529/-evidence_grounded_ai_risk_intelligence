@@ -6,9 +6,13 @@ An AI-assisted risk intelligence prototype that combines automated document inge
 
 **Source → Evidence → Structured Fact → Validation → Risk → Explanation**
 
-## Status
+## Current accepted stage
 
-M4–M7 provide validated evidence, six-variable model v1.2 leaf beliefs, hierarchical ER aggregation and deterministic traceability. M8 adds the Streamlit application. See [M8 application notes](docs/implementation/M8-application-streamlit.md) for configuration, supported workflows and limitations. Deployment is deferred to M9.
+Foundation v33 was accepted and frozen on 3 October 2026 after five-company testing and latest-only Turso/R2 cleanup. The default Data Foundation workflow reuses saved results without repeating ingestion or OpenAI extraction. See [the freeze record](docs/implementation/FOUNDATION_FREEZE_20261003.md) and [current handoff](CURRENT_HANDOFF.md). The next belief/ER phase remains pending.
+
+## Historical milestone status
+
+M4–M7 provide validated evidence, six-variable model v1.2 leaf beliefs, hierarchical ER aggregation and deterministic traceability. M8.1 refines the Streamlit application for user-facing explanation while preserving M4–M7 semantics. See [M8 application notes](docs/implementation/M8-application-streamlit.md) for configuration, supported workflows and limitations. Deployment is deferred to M9.
 
 Run the UI from the repository root after installing the project and configuring an existing migrated database:
 
@@ -78,3 +82,12 @@ invariants, serialization, interfaces and decisions requiring human review.
 ## Important limitation
 
 This is a research/prototype system. It is not a regulated credit rating, investment recommendation, legal opinion, or compliance determination.
+
+### Current M8.1 handoff
+
+See [CURRENT_HANDOFF](docs/implementation/CURRENT_HANDOFF.md) for current six-variable
+v1.2 status, changes, validation limitations and the next diagnostic step.
+Model names and exact document download hosts now live in
+`src/risk_intelligence/services/config/models.yaml`; credentials remain in the
+existing secure environment configuration. `OPENAI_EXTRACTION_MODEL` is retained
+as a historical Settings field but the application runtime uses YAML.

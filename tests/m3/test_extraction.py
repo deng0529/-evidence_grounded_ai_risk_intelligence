@@ -33,6 +33,59 @@ def test_exact_negative_scale_current_comparative_and_zero(ixbrl: bytes) -> None
     assert unresolved.source_concept.endswith('TotalAssetsLessCurrentLiabilities')
 
 
+
+def test_2011_numdotdecimal_transformation(ixbrl: bytes) -> None:
+    import re
+
+    content = ixbrl.replace(
+        b'xmlns:test=',
+        b'xmlns:ixt2="http://www.xbrl.org/inlineXBRL/transformation/2011-07-31" xmlns:test=',
+        1,
+    )
+
+    # Locate the actual nonFraction containing the fixture value rather than
+    # depending on XML attribute order.
+    pattern = re.compile(
+        rb'(<ix:nonFraction\b[^>]*)(>123\.40</ix:nonFraction>)'
+    )
+    match = pattern.search(content)
+    assert match is not None, "Expected 123.40 fixture fact was not found"
+
+    attrs = match.group(1)
+    attrs = re.sub(rb'\s+scale="[^"]*"', b'', attrs)
+    attrs = re.sub(rb'\s+sign="[^"]*"', b'', attrs)
+    attrs += b' scale="0" sign="+" format="ixt2:numdotdecimal"'
+
+    content = (
+        content[:match.start()]
+        + attrs
+        + b'>184,473</ix:nonFraction>'
+        + content[match.end():]
+    )
+
+    result = extract_ixbrl(content, 'd', 'ZZ000003')
+
+    assert result.facts[0].value == Decimal('184473')
+    assert result.facts[0].raw_value == '184,473'
+    assert result.facts[0].scale == 0
+    assert result.facts[0].sign == '+'
+    assert result.facts[0].transformation == (
+        '{http://www.xbrl.org/inlineXBRL/transformation/2011-07-31}numdotdecimal'
+    )
+
+def test_2011_zerodash_transformation_is_explicit_zero(ixbrl: bytes) -> None:
+    content = ixbrl.replace(
+        b'xmlns:test=',
+        b'xmlns:ixt2="http://www.xbrl.org/inlineXBRL/transformation/2011-07-31" xmlns:test='
+    )
+    content = content.replace(
+        b'name="test:Stocks" contextRef="current" unitRef="gbp">0',
+        b'name="test:Stocks" contextRef="current" unitRef="gbp" format="ixt2:zerodash">-'
+    )
+    result = extract_ixbrl(content, 'd', 'ZZ000003')
+    assert result.facts[2].value == Decimal(0)
+    assert result.facts[2].raw_value == '-'
+
 def test_mapping_never_guesses_total_assets_and_preserves_conflicts(ixbrl: bytes) -> None:
     result = extract_ixbrl(ixbrl, 'document', 'ZZ000003')
     mapped = [registry().map(fact, company_id='c', company_number='ZZ000003', source_id='s',

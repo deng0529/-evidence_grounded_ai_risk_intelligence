@@ -1,9 +1,11 @@
 """M8 application orchestration and exact presentation data; no risk formulas."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from dataclasses import dataclass
 
 from risk_intelligence.domain.common import Contract, Text
+from .model_config import RuntimeConfigurationError
+from risk_intelligence.ingestion.companies_house.client import company_number, RetrievalError, ParseError
 from risk_intelligence.domain.risk import BeliefDistribution
 from risk_intelligence.domain.runs import Assessment
 from risk_intelligence.explanation import AssessmentExplanation, VariableExplanation
@@ -42,6 +44,12 @@ class ApplicationMessage:
 
 def error_message(error: Exception) -> ApplicationMessage:
     """Translate failures without leaking paths, credentials, source data or tracebacks."""
+    if isinstance(error, RuntimeConfigurationError):
+        return ApplicationMessage("CONFIGURATION", "The service configuration needs attention. Contact the administrator before retrying.")
+    if isinstance(error, RetrievalError):
+        return ApplicationMessage("RETRIEVAL", "Source retrieval failed. The recorded diagnostic identifies the failed operation; no missing source was treated as a zero value.")
+    if isinstance(error, ParseError):
+        return ApplicationMessage("EXTRACTION", "The source could not be extracted or verified. Supported evidence remains recorded.")
     if isinstance(error, IntegrityError):
         detail = str(error)
         for fragment, code, message in (
@@ -99,13 +107,29 @@ class AssessmentApplication:
             choices.append(AssessmentChoice(assessment=assessment,
                 company_name=company.company_name if company else None,
                 reporting_year=assessments.get_financial_reporting_year(assessment.assessment_id)))
-        return tuple(choices)
+        # Creation time is an audit field; IDs and assessment dates are not creation order.
+        runs = {choice.assessment.processing_run_id: assessments.get_processing_run(choice.assessment.processing_run_id)
+                for choice in choices}
+        return tuple(sorted(choices, key=lambda choice: (
+            runs[choice.assessment.processing_run_id].started_at if runs[choice.assessment.processing_run_id] else datetime.min.replace(tzinfo=UTC),
+            choice.assessment.assessment_id), reverse=True))
 
     def load(self, assessment_id: str) -> AssessmentView:
         """Display only an already-persisted complete M7 tree, preserving all exact values."""
         explanation = ExplanationService(self.database).for_assessment(assessment_id)
         company = SqlCompanyRepository(self.database).get_by_company_number(explanation.assessment.company_number)
         return AssessmentView(company_name=company.company_name if company else None, explanation=explanation)
+
+    def existing(self, *, number: str, reporting_year: int, assessment_date: date) -> AssessmentView | None:
+        """Reuse an exact company/year/date v1.2 context; never silently move dates."""
+        number = company_number(number)
+        for choice in self.choices():
+            assessment = choice.assessment
+            if (assessment.company_number == number and choice.reporting_year == reporting_year
+                    and assessment.assessment_date == assessment_date and assessment.risk_model_version == '1.2'):
+                # Broken lineage propagates; it must not be hidden by a silent fresh run.
+                return self.load(assessment.assessment_id)
+        return None
 
     def create(self, *, number: str, assessment_date: date, reporting_year: int, run_id: str,
                calculated_at: datetime, m2: CompaniesHouseIngestion | None = None,

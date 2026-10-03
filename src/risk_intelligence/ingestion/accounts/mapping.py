@@ -17,17 +17,32 @@ def default_registry() -> 'FinancialMappingRegistry':
     sufficient for current/interest-bearing classification and are excluded.
     """
     from .pdf import LABELS
-    namespace = '{http://xbrl.frc.org.uk/fr/2024-01-01/core}'
+    # Companies House filings can legitimately use more than one annual FRC
+    # taxonomy suite.  Namespace is part of the source concept identity, so each
+    # reviewed annual core namespace is admitted explicitly; local-name matching
+    # remains forbidden.  This is a mapping-rule change and therefore has a new
+    # immutable mapping version.
+    namespaces = tuple(
+        f'{{http://xbrl.frc.org.uk/fr/{year}-01-01/core}}'
+        for year in (2021, 2022, 2023, 2024, 2025, 2026)
+    )
     entries: tuple[tuple[str, CanonicalConcept], ...] = (
         ('CurrentAssets', 'CURRENT_ASSETS'), ('CurrentLiabilities', 'CURRENT_LIABILITIES'),
-        ('TotalInventories', 'INVENTORY'), ('CurrentInventories', 'INVENTORY'),
+        ('TotalInventories', 'INVENTORY'), ('CurrentInventories', 'INVENTORY'), ('Stocks', 'INVENTORY'),
         ('NetAssetsLiabilities', 'NET_ASSETS'), ('TotalAssets', 'TOTAL_ASSETS'),
     )
-    rules = tuple(MappingRule(source_concept=namespace + source, canonical_concept=target)
-                  for source, target in entries)
+    rules = tuple(
+        MappingRule(source_concept=namespace + source, canonical_concept=target)
+        for namespace in namespaces for source, target in entries
+    )
     rules += tuple(MappingRule(source_concept='pdf-label:' + label, canonical_concept=target)
                    for label, target in LABELS.items())
-    return FinancialMappingRegistry('financial-concepts-v1', rules)
+    # Semantic fallback is intentionally concept-scoped rather than label-scoped.
+    # The label/row remains preserved on SourceFinancialFact and is admitted only
+    # after deterministic locator/value/scope/date checks in fallback.py.
+    rules += tuple(MappingRule(source_concept='llm-semantic:' + concept, canonical_concept=concept)
+                   for concept in ('CURRENT_ASSETS','CURRENT_LIABILITIES','INVENTORY','NET_ASSETS','TOTAL_ASSETS'))
+    return FinancialMappingRegistry('financial-concepts-v4', rules)
 
 
 class MappingRule(Contract):

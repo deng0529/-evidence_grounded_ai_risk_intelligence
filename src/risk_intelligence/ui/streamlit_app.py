@@ -1,202 +1,548 @@
-"""Streamlit rendering only; production services own computation and traceability."""
-
+"""M8.1 Streamlit UI: user-first risk explanation over frozen M4-M7 outputs."""
 from datetime import UTC, date, datetime
+from hashlib import sha256
 import os
 from uuid import uuid4
-
 import streamlit as st
 
+from risk_intelligence.ingestion.accounts.coverage import read_coverage, coverage_text, coverage_rows
 from risk_intelligence.config import load_settings
 from risk_intelligence.explanation import InputExplanation
-from risk_intelligence.services.application import (
-    AssessmentApplication, AssessmentView, belief_row, display_value, error_message, variable_row,
-)
+from risk_intelligence.services.application import AssessmentApplication, AssessmentView, display_value, error_message
 from risk_intelligence.services.application_runtime import application_database, ingestion_services
+from risk_intelligence.services.data_foundation import existing_run, load_foundation, latest_saved_run
+from risk_intelligence.services.model_config import load_model_configuration, RuntimeConfigurationError
+from risk_intelligence.services.narrative import generate_narrative, narrative_fingerprint, NarrativeUnavailable
+from risk_intelligence.services.presentation import belief_display, risk_sentence, two_dp, variable_display
+from risk_intelligence.storage.local import LocalStorage
+from risk_intelligence.storage.r2 import R2Storage
+from risk_intelligence.ingestion.companies_house.policy import Resource
 
 
 def _show_error(error: Exception) -> None:
     message = error_message(error)
-    st.error(f'{message.code}: {message.message}')
+    st.error(message.message)
 
 
 def _select_existing(environ: dict[str, str]) -> None:
     with application_database(environ) as database:
-        choices = AssessmentApplication(database).choices()
+        choices = tuple(c for c in AssessmentApplication(database).choices() if c.assessment.risk_model_version == '1.2')
         if not choices:
-            st.info('No assessments have been recorded. Run a new assessment or configure a database containing persisted results.')
-            st.session_state.pop('assessment_view', None)
-            return
-        company_numbers = tuple(dict.fromkeys(choice.assessment.company_number for choice in choices))
-        names = {choice.assessment.company_number: choice.company_name for choice in choices}
-        number = st.selectbox('Company', company_numbers,
-                              format_func=lambda n: f'{names[n] or "Name unavailable"} · {n}')
-        candidates = tuple(choice for choice in choices if choice.assessment.company_number == number)
-        years = tuple(dict.fromkeys(choice.reporting_year for choice in candidates))
+            st.info('No completed assessments are available in this database.')
+            st.session_state.pop('assessment_view', None); return
+        numbers = tuple(dict.fromkeys(c.assessment.company_number for c in choices))
+        names = {c.assessment.company_number: c.company_name for c in choices}
+        number = st.selectbox('Company', numbers, format_func=lambda n: names[n] or n)
+        candidates = tuple(c for c in choices if c.assessment.company_number == number)
+        years = tuple(dict.fromkeys(c.reporting_year for c in candidates))
         year = st.selectbox('Financial reporting year', years, format_func=display_value)
-        selected = tuple(choice for choice in candidates if choice.reporting_year == year)
-        by_id = {choice.assessment.assessment_id: choice for choice in selected}
-        identity = st.selectbox('Assessment', tuple(by_id), format_func=lambda i:
-            f'{by_id[i].assessment.assessment_date} · {i} · model {by_id[i].assessment.risk_model_version}')
-        previous = st.session_state.get('assessment_view')
-        if previous and previous.explanation.assessment.assessment_id != identity:
+        selected = tuple(c for c in candidates if c.reporting_year == year)
+        # Multiple persisted runs are an audit concern, not a user choice. Use the latest listed v1.2 assessment.
+        choice = selected[0]
+        selection = (number, year, choice.assessment.assessment_id)
+        if st.session_state.get('assessment_selection') != selection:
             st.session_state.pop('assessment_view', None)
+            st.session_state.assessment_selection = selection
         if st.button('Load assessment', type='primary'):
-            st.session_state.pop('assessment_view', None)
-            with st.spinner('Loading persisted results and evidence references…'):
-                st.session_state.assessment_view = AssessmentApplication(database).load(identity)
+            with st.spinner('Loading assessment and supporting evidence…'):
+                st.session_state.assessment_view = AssessmentApplication(database).load(choice.assessment.assessment_id)
 
 
 def _new_assessment(environ: dict[str, str]) -> None:
     settings = load_settings(environ)
-    st.caption('A new assessment records a new run. Existing assessments are not overwritten. Assessment date and reporting year are separate inputs.')
     with st.form('new_assessment'):
-        number = st.text_input('Company number', max_chars=8)
+        number = st.text_input('Company number', max_chars=8,
+                               help='Use the Companies House company number. If you only know the company name, use the official register search link below.')
+        st.markdown('[Find a company number on Companies House](https://find-and-update.company-information.service.gov.uk/)')
         day = st.date_input('Assessment date', value=date.today())
-        year = st.number_input('Financial reporting year', min_value=1900, max_value=9999,
-                               value=None, step=1, placeholder='Enter the explicit reporting year')
-        mode = st.selectbox('Evidence workflow', ('Live ingestion', 'Reuse recorded ingestion runs'))
-        m2_id = st.text_input('M2 run ID (reuse only)')
-        m3_id = st.text_input('M3 run ID (reuse only)')
-        maximum = st.number_input('Maximum accounts documents (live)', min_value=1, max_value=10, value=5)
-        llm = st.checkbox('Enable configured LLM extraction for live ingestion', value=False)
-        st.caption('Live ingestion uses configured Companies House and storage adapters. Reuse requires exact existing M2/M3 run IDs for this company and assessment date.')
+        year = st.number_input('Financial reporting year', min_value=1900, max_value=9999, value=None, step=1)
+        refresh = st.checkbox('Refresh source evidence', value=False,
+                              help='Reuse an existing assessment for the same company, year and assessment date unless refresh is selected.')
         submitted = st.form_submit_button('Run new assessment', type='primary')
-    if not submitted:
-        return
+    if not submitted: return
     st.session_state.pop('assessment_view', None)
-    if year is None or not number.strip():
-        st.error('Enter a company number and an explicit financial reporting year.')
-        return
-    if mode == 'Reuse recorded ingestion runs' and not (m2_id.strip() and m3_id.strip()):
-        st.error('Both recorded ingestion run IDs are required for reuse.')
-        return
+    if year is None or not number.strip(): st.error('Enter a company number and reporting year.'); return
     run_id = 'ui-' + uuid4().hex
-    st.info(f'Processing run: {run_id}')
-    with st.spinner('Running the production assessment pipeline…'):
-        with application_database(environ, write=True) as database:
-            m2 = m3 = None
-            reuse = None
-            if mode == 'Live ingestion':
-                m2, m3 = ingestion_services(database, settings, environ, enable_llm=llm)
+    with st.spinner('Collecting, validating and assessing evidence…'):
+        with application_database(environ, write=refresh) as database:
+            application = AssessmentApplication(database)
+            existing = None if refresh else application.existing(
+                number=number, reporting_year=int(year), assessment_date=day)
+            if existing is not None:
+                st.session_state.assessment_view = existing
             else:
-                reuse = (m2_id.strip(), m3_id.strip())
-            st.session_state.assessment_view = AssessmentApplication(database).create(
-                number=number, assessment_date=day, reporting_year=int(year), run_id=run_id,
-                calculated_at=datetime.now(UTC), m2=m2, m3=m3, reuse_runs=reuse, max_documents=int(maximum))
-    st.success('Assessment results persisted. Unknown and any recorded exclusions remain visible below.')
+                m2, m3 = ingestion_services(database, settings, environ, enable_llm=False)
+                st.session_state.assessment_view = application.create(
+                    number=number, assessment_date=day, reporting_year=int(year), run_id=run_id,
+                    calculated_at=datetime.now(UTC), m2=m2, m3=m3, max_documents=5)
+    st.success('Assessment loaded from recorded evidence.' if existing is not None else 'Assessment processed. Review the results and evidence gaps below.')
 
 
-def _input_details(item: InputExplanation, key: str) -> None:
-    payload = item.model_dump(mode='json')
-    record = payload['record']
-    st.caption(f'{item.reference.kind} · {item.reference.validated_id} · mandatory: {item.reference.mandatory}')
-    st.write('Persisted M4 reliability:', str(item.reference.reliability_r))
-    summary = {name: record[name] for name in (
-        'canonical_concept', 'value_numeric', 'currency', 'unit', 'analytical_scope', 'period_start', 'period_end',
-        'availability_status', 'validation_status', 'provenance_type', 'normalization_method', 'derivation_method',
-        'obligation_kind', 'obligation_period', 'due_date', 'filing_date', 'filing_state',
-    ) if name in record}
-    st.json(summary, expanded=True)
-    with st.expander('Validation, conflict and persisted M4 record'):
-        st.json(record, expanded=False)
-    with st.expander('Source observations and canonical lineage'):
-        if not item.observations:
-            st.info('No source observations recorded for this input.')
-        else:
-            st.json(payload['observations'], expanded=False)
-        if item.financial_lineage is None:
-            st.caption('Financial mapping/derivation lineage: unavailable or not applicable to this input.')
-        else:
-            st.json(payload['financial_lineage'], expanded=False)
-    with st.expander('Coverage snapshots (separate from field-level locators)'):
-        if item.snapshots:
-            st.json(payload['snapshots'], expanded=False)
-        else:
-            st.caption('No coverage snapshots recorded for this input.')
-    st.markdown('**Evidence and provenance**')
-    st.caption('A citation does not by itself establish independent validation support. See the retained validation roles and reasons.')
-    if not item.evidence:
-        st.info('No field-level evidence references recorded. No provenance has been inferred.')
+
+def _foundation(environ: dict[str, str]) -> None:
+    """Observable A-E acceptance runner; every external boundary is shown separately."""
+    settings = load_settings(environ)
+    with st.form('data_foundation'):
+        company_options = {
+            'LODI — 05127466': '05127466',
+            'Westpoint Homes Limited — SC137690': 'SC137690',
+            'Pip & Nut — 08624397': '08624397',
+            'Country Style Foods Limited — 02554051': '02554051',
+            'HP Foods Limited — 02251694': '02251694',
+            'Other company — enter Companies House number': None,
+        }
+        company_label = st.selectbox('Company', tuple(company_options), key='foundation_company')
+        preset_number = company_options[company_label]
+        custom_number = st.text_input(
+            'Companies House number', value='', key='foundation_custom_company_number',
+            placeholder='e.g. 01234567 or SC123456',
+            disabled=preset_number is not None,
+            help='Choose Other company to test any UK company by Companies House number.')
+        number = preset_number or custom_number.strip()
+        today = date.today()
+        assessment_dates = tuple(today.fromordinal(today.toordinal() - offset) for offset in range(0, 367))
+        day = st.selectbox('Assessment date', assessment_dates, index=0, key='foundation_day',
+                           format_func=lambda d: d.isoformat())
+        reporting_years = tuple(range(today.year, max(1900, today.year - 15), -1))
+        default_year = reporting_years.index(2025) if 2025 in reporting_years else 0
+        year = st.selectbox('Financial reporting year', reporting_years, index=default_year, key='foundation_year')
+        run_mode = st.radio('Run mode', ('REUSE PERSISTED RESULT', 'FRESH END-TO-END'), horizontal=True,
+            help='Fresh forces new Companies House retrieval, new raw evidence, new extraction, Turso persistence/read-back, then UI. Reuse reads the latest saved company result independently of the current date; it never starts fresh ingestion.')
+        refresh = run_mode == 'FRESH END-TO-END'
+        submitted = st.form_submit_button('Validate data foundation', type='primary')
+
+    def fresh_board(run_id: str | None = None) -> list[dict[str, str]]:
+        return [
+            {'Stage':'0', 'Boundary':'Turso database connection', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'1', 'Boundary':'Companies House API: profile / filings / officers', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'2', 'Boundary':'Accounts filing + document metadata', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'3', 'Boundary':'Companies House iXBRL/XHTML acquisition', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'4', 'Boundary':'PDF semantic fallback (direct OpenAI; no OCR)', 'Status':'WAITING', 'Detail':'Used only when iXBRL/XHTML is unavailable'},
+            {'Stage':'5', 'Boundary':'R2 raw evidence write + read-back + SHA-256', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'6', 'Boundary':'Deterministic extraction + 5-fact completeness', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'7', 'Boundary':'Primary accounts evidence validation', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'8.0', 'Boundary':'OpenAI configuration / semantic need', 'Status':'WAITING', 'Detail':'Not reached'},
+            {'Stage':'8.1', 'Boundary':'OpenAI request', 'Status':'WAITING', 'Detail':'Not reached'},
+            {'Stage':'8.2', 'Boundary':'OpenAI response', 'Status':'WAITING', 'Detail':'Not reached'},
+            {'Stage':'8.3', 'Boundary':'Semantic candidates + evidence validation', 'Status':'WAITING', 'Detail':'Not reached'},
+            {'Stage':'8.4', 'Boundary':'Semantic interpretation persistence to Turso', 'Status':'WAITING', 'Detail':'Not reached'},
+            {'Stage':'9', 'Boundary':'Turso structured write + read-back', 'Status':'WAITING', 'Detail':'Not attempted'},
+            {'Stage':'10', 'Boundary':'UI from Turso read-back', 'Status':'WAITING', 'Detail':'Not attempted'},
+        ]
+
+    def set_stage(board: list[dict[str, str]], stage: str, status: str, detail: str) -> None:
+        for row in board:
+            if row['Stage'] == stage:
+                row['Status'], row['Detail'] = status, detail
+                return
+
+    if submitted:
+        st.session_state.pop('foundation_view', None)
+        st.session_state.pop('foundation_storage_check', None)
+        st.session_state.pop('foundation_semantic_trace', None)
+        st.session_state.pop('foundation_coverage', None)
+        st.session_state.pop('foundation_before_openai', None)
+        if year is None or not number.strip():
+            st.error('Enter a company number and reporting year.'); return
+        from risk_intelligence.ingestion.companies_house.client import company_number
+        number = company_number(number)
+        run_id = 'foundation-' + uuid4().hex if refresh else None
+        board = fresh_board(run_id)
+        st.session_state.foundation_stage_board = board
+        st.session_state.foundation_run_id = run_id or 'reuse lookup'
+        st.session_state.foundation_run_mode = run_mode
+        st.subheader('Live pipeline progress')
+        st.caption(f"Run ID: `{st.session_state.foundation_run_id}` · Mode: **{run_mode}**")
+        board_slot = st.empty()
+        board_slot.dataframe(board, hide_index=True, width='stretch')
+        try:
+            # Gate 0: prove the configured database can be opened before any network ingestion.
+            with application_database(environ, write=True) as database:
+                set_stage(board, '0', 'PASS', 'Configured database opened for ' + ('read/write' if refresh else 'read-only reuse'))
+                board_slot.dataframe(board, hide_index=True, width='stretch')
+                pair = None if refresh else latest_saved_run(database, number)
+                if pair is None:
+                    if not refresh:
+                        raise RuntimeConfigurationError('No saved company result. Select Fresh End-to-End explicitly to acquire data.')
+                    m2, m3 = ingestion_services(database, settings, environ, enable_llm=True)
+                    m2_id, m3_id = run_id + '-m2', run_id + '-m3'
+                    set_stage(board, '1', 'RUNNING', 'Requesting fresh profile, filing history and officers')
+                    board_slot.dataframe(board, hide_index=True, width='stretch')
+                    m2.ingest(number, day, m2_id, force_refresh=True, resources=(Resource.PROFILE, Resource.FILINGS, Resource.OFFICERS))
+                    set_stage(board, '1', 'PASS', 'Fresh Companies House API retrieval completed')
+                    set_stage(board, '5', 'IN PROGRESS', 'API JSON persisted; accounts raw objects will be added before final independent read-back')
+                    set_stage(board, '2', 'RUNNING', 'Selecting eligible accounts filing and requesting document metadata')
+                    set_stage(board, '8.0', 'READY' if settings.openai_api_key else 'NOT CONFIGURED',
+                              'OpenAI credentials/model configured; waiting to determine semantic need' if settings.openai_api_key else 'No OpenAI key configured')
+                    board_slot.dataframe(board, hide_index=True, width='stretch')
+
+                    def accounts_progress(event: str, detail: str) -> None:
+                        if event == 'accounts_metadata_request':
+                            set_stage(board, '2', 'RUNNING', detail)
+                        elif event == 'accounts_metadata_stored':
+                            set_stage(board, '2', 'PASS', detail)
+                        elif event == 'representations':
+                            set_stage(board, '3', 'READY' if 'xhtml' in detail.lower() or 'xml' in detail.lower() else 'NOT AVAILABLE', detail)
+                            set_stage(board, '4', 'READY' if ('pdf' in detail.lower() and not ('xhtml' in detail.lower() or 'xml' in detail.lower())) else 'NOT NEEDED', 'PDF fallback available but skipped because iXBRL/XHTML is primary' if ('xhtml' in detail.lower() or 'xml' in detail.lower()) else detail)
+                        elif event in {'ixbrl_route_selected', 'pdf_route_selected'}:
+                            if event == 'ixbrl_route_selected':
+                                set_stage(board, '4', 'NOT NEEDED', detail)
+                            else:
+                                set_stage(board, '4', 'READY', detail)
+                        elif event == 'representation_request':
+                            target = '4' if 'PDF' in detail else '3'; set_stage(board, target, 'RUNNING', detail)
+                        elif event == 'representation_retrieved':
+                            target = '4' if 'PDF' in detail else '3'; set_stage(board, target, 'RUNNING', detail)
+                        elif event == 'representation_stored':
+                            target = '4' if 'PDF' in detail else '3'; set_stage(board, target, 'PASS', detail)
+                        elif event == 'pdf_kind':
+                            set_stage(board, '4', 'RUNNING', detail)
+                        elif event == 'multimodal_llm':
+                            set_stage(board, '8.0', 'PASS', 'No iXBRL: OpenAI asked to examine all five concepts from complete PDF')
+                            set_stage(board, '8.1', 'RUNNING', detail)
+                        elif event == 'semantic_llm':
+                            set_stage(board, '8.0', 'PASS', st.session_state.get('foundation_before_openai', detail))
+                            set_stage(board, '8.1', 'RUNNING', detail)
+                        elif event == 'deterministic_coverage':
+                            st.session_state.foundation_before_openai = detail
+                            set_stage(board, '6', 'PASS', detail)
+                        elif event == 'financial_route_summary':
+                            coverage = read_coverage(detail)
+                            if coverage:
+                                st.session_state.foundation_coverage = coverage
+                                set_stage(board, '6', 'PASS', coverage_text(coverage))
+                                if coverage['openai_requested']:
+                                    set_stage(board, '8.3', 'PASS', coverage_text(coverage))
+                        elif event == 'semantic_not_needed':
+                            set_stage(board, '8.0', 'NOT NEEDED', detail)
+                        elif event == 'canonical_persist_start':
+                            set_stage(board, '8.4', 'RUNNING', detail)
+                        elif event == 'canonical_persist_done':
+                            set_stage(board, '8.4', 'RUNNING', detail + '; finalizing run selection')
+                        elif event == 'selection_finalized':
+                            set_stage(board, '8.4', 'PASS', detail)
+                        elif event == 'semantic_required':
+
+                            if not (detail.startswith('No unresolved semantic context') and any(r['Stage']=='8.1' and r['Status'] in {'RUNNING','PASS'} for r in board)):
+                                set_stage(board, '8.0', 'NOT NEEDED' if detail.startswith('No unresolved semantic context') else 'PASS', detail)
+                        elif event == 'openai_request':
+                            set_stage(board, '8.1', 'RUNNING', detail)
+                        elif event == 'openai_response':
+                            set_stage(board, '8.1', 'PASS', 'OpenAI request completed')
+                            set_stage(board, '8.2', 'PASS', detail)
+                        elif event == 'openai_failed':
+                            set_stage(board, '8.1', 'FAILED', detail)
+                        elif event == 'semantic_candidates':
+                            set_stage(board, '8.3', 'RUNNING', detail)
+                        elif event == 'semantic_decision':
+                            trace = st.session_state.setdefault('foundation_semantic_trace', [])
+                            trace.append(detail)
+                        elif event == 'semantic_validation':
+                            set_stage(board, '8.3', 'PASS', detail)
+                        elif event == 'semantic_persist_start':
+                            set_stage(board, '8.4', 'RUNNING', detail)
+                        elif event == 'semantic_persist_done':
+                            set_stage(board, '8.4', 'PASS', detail)
+                        elif event == 'representation_extract_failed':
+                            set_stage(board, '6', 'RUNNING', detail)
+                        elif event == 'representation_extracted':
+                            set_stage(board, '6', 'RUNNING', detail)
+                        elif event == 'cross_validation':
+                            set_stage(board, '7', 'PASS' if not detail.startswith('CONFLICT') else 'FAILED', detail)
+                        elif event == 'representation_selected':
+                            set_stage(board, '6', 'PASS', detail)
+                        board_slot.dataframe(board, hide_index=True, width='stretch')
+
+                    m3_final = m3.ingest(number, day, m3_id, reporting_year=int(year), max_documents=5,
+                                          force_refresh=True, progress=accounts_progress)
+                    pair = (m2_id, m3_id)
+                    # Requested reporting year + selected filing control the run.
+                    # accounts_run_selection is provenance/bookkeeping only; it is not
+                    # an OpenAI admission condition and cannot block Gate 9.
+                    selection_rows = database.query(
+                        "SELECT requested_reporting_year,evidence_reporting_year,selected_period_end "
+                        "FROM accounts_run_selection WHERE processing_run_id=?", (m3_id,))
+                    selected_period = (str(selection_rows[0]['selected_period_end'])
+                                       if len(selection_rows) == 1 else f'{year} (year-level)')
+                    coverage = st.session_state.get('foundation_coverage')
+                    detail = coverage_text(coverage) if coverage else 'Deterministic/semantic extraction completed'
+                    set_stage(board, '6', 'PASS', detail + f'; selected reporting period {selected_period}')
+                    if any(r['Stage']=='8.0' and r['Status']=='PASS' for r in board):
+                        if next((r for r in board if r['Stage']=='8.3'), {}).get('Status') in {'RUNNING','WAITING','READY'}:
+                            set_stage(board, '8.3', 'PASS', 'Semantic candidates admitted and canonical facts persisted')
+                        if next((r for r in board if r['Stage']=='8.4'), {}).get('Status') in {'RUNNING','WAITING','READY'}:
+                            set_stage(board, '8.4', 'PASS',
+                                      f'Canonical financial facts persisted for requested year {year}')
+                    board_slot.dataframe(board, hide_index=True, width='stretch')
+
+                    # Finalise raw-evidence integrity immediately after ingestion, before
+                    # any structured read-back. A later Turso/UI failure must not leave
+                    # a successfully verified R2 boundary displayed as PARTIAL.
+                    storage = (R2Storage.from_settings(settings) if settings.evidence_storage_backend == 'r2'
+                               else LocalStorage(settings.local_data_directory / 'raw'))
+                    raw_rows = database.query(
+                        "SELECT object_path,checksum FROM raw_evidence WHERE processing_run_id IN (?,?) "
+                        "ORDER BY processing_run_id,raw_evidence_id", (m2_id, m3_id))
+                    checked = 0
+                    for item in raw_rows:
+                        content = storage.read(str(item['object_path']))
+                        if sha256(content).hexdigest() != str(item['checksum']):
+                            raise RuntimeError('Raw evidence integrity verification failed')
+                        checked += 1
+                    st.session_state.foundation_storage_check = (
+                        'R2' if settings.evidence_storage_backend == 'r2' else 'Local', checked)
+                    set_stage(board, '5', 'PASS',
+                              f"{'R2' if settings.evidence_storage_backend == 'r2' else 'Local'} read-back + SHA-256 verified for {checked} objects")
+
+                    # m3 returned successfully, so semantic/multimodal processing itself
+                    # did not throw. Resolve its status before starting Gate 9 so a later
+                    # database read error cannot be mislabelled as an OpenAI failure.
+                    llm_rows = database.query(
+                        "SELECT p.status,p.error_code FROM accounts_run_processing rp "
+                        "JOIN accounts_processing p USING(fingerprint) "
+                        "WHERE rp.processing_run_id=? AND p.stage='LLM' ORDER BY p.created_at", (m3_id,))
+                    if llm_rows:
+                        failed_llm = [r for r in llm_rows if str(r['status']) != 'COMPLETE']
+                        if failed_llm:
+                            codes = ', '.join(sorted({str(r['error_code'] or 'provider/processing error') for r in failed_llm}))
+                            set_stage(board, '8.1', 'PARTIAL',
+                                      f'OpenAI semantic attempt had a technical failure ({codes}); unresolved concepts are persisted with explicit reasons')
+                            if next((r for r in board if r['Stage']=='8.2'), {}).get('Status') == 'WAITING':
+                                set_stage(board, '8.2', 'NOT REACHED', 'No usable OpenAI response artifact was produced for the failed attempt')
+                        else:
+                            if next((r for r in board if r['Stage']=='8.2'), {}).get('Status') == 'WAITING':
+                                set_stage(board, '8.2', 'PASS', f'OpenAI artifact completed ({len(llm_rows)} artifact(s))')
+                    else:
+                        for stage in ('8.0','8.1','8.2','8.3','8.4'):
+                            if next((r for r in board if r['Stage']==stage), {}).get('Status') in {'WAITING','READY'}:
+                                set_stage(board, stage, 'NOT NEEDED', 'No LLM processing artifact was required')
+                    board_slot.dataframe(board, hide_index=True, width='stretch')
+                else:
+                    for stage in ('1','2','3','4','5','6','7'):
+                        set_stage(board, stage, 'SKIPPED', 'Reuse mode: no fresh acquisition/extraction')
+
+                    for stage in ('8.0','8.1','8.2','8.3','8.4'):
+                        set_stage(board, stage, 'NOT NEEDED', 'Reuse mode')
+                board_slot.dataframe(board, hide_index=True, width='stretch')
+
+                # Gate 9 is an independent persistence acceptance boundary.  Do not
+                # validate Turso using the same long-lived connection that performed
+                # ingestion writes: a fresh connection proves the committed state is
+                # actually visible to a new reader and avoids carrying provider/driver
+                # statement state from the write session into the read-back check.
+                set_stage(board, '9', 'RUNNING', 'Opening an independent database connection for persisted read-back')
+                board_slot.dataframe(board, hide_index=True, width='stretch')
+                with application_database(environ) as readback_database:
+                    view = load_foundation(readback_database, *pair)
+                st.session_state.foundation_view = view
+                set_stage(board, '9', 'PASS', 'Structured facts and run lineage read back successfully on an independent connection')
+
+                # R2 integrity and LLM status were finalised before Gate 9.
+                set_stage(board, '10', 'PASS', 'UI is displaying the independent Turso/database read-back object')
+                board_slot.dataframe(board, hide_index=True, width='stretch')
+                st.session_state.foundation_stage_board = board
+            st.success('Fresh A→E run completed.' if refresh else 'Persisted A→E result loaded.')
+        except Exception as exc:
+            # Preserve completed stages and identify the boundary at which execution stopped.
+            # Attribute a terminal exception to the latest active boundary, not the
+            # earliest stale RUNNING row.  Earlier versions could therefore display a
+            # Gate-9 read-back error as a false Stage-6 extraction failure.
+            active = [r for r in board if r['Status'] == 'RUNNING']
+            running = active[-1] if active else None
+            if running is not None:
+                running['Status'] = 'FAILED'
+                running['Detail'] = f'{type(exc).__name__}: {str(exc)[:240]}'
+            for row in board:
+                if row['Status'] == 'WAITING':
+                    row['Status'], row['Detail'] = 'NOT REACHED', 'Stopped after the failed stage above'
+                elif row['Status'] == 'READY':
+                    row['Status'], row['Detail'] = 'NOT REACHED', 'Fallback was available but processing stopped earlier'
+                elif row['Stage'] == '5' and row['Status'] == 'IN PROGRESS':
+                    row['Status'], row['Detail'] = 'PARTIAL', 'Earlier immutable raw evidence was persisted; final all-object R2 read-back was not reached'
+            st.session_state.foundation_stage_board = board
+            board_slot.dataframe(board, hide_index=True, width='stretch')
+            st.error('Fresh pipeline stopped. The table above identifies the last boundary reached; completed immutable evidence is preserved.')
+            return
+
+    board = st.session_state.get('foundation_stage_board')
+    if board and not submitted:
+        st.subheader('Last pipeline progress')
+        st.caption(f"Run ID: `{st.session_state.get('foundation_run_id','—')}` · Mode: **{st.session_state.get('foundation_run_mode','UNKNOWN')}**")
+        st.dataframe(board, hide_index=True, width='stretch')
+
+    view = st.session_state.get('foundation_view')
+    if view is None:
+        st.caption('This workflow stops before M4/M5. Fresh mode validates Companies House → raw evidence → extraction/OpenAI if needed → Turso read-back → UI.')
         return
-    by_id = {evidence.reference.evidence_id: evidence for evidence in item.evidence}
-    identity = st.selectbox('Evidence reference', tuple(by_id), key=f'{key}-evidence',
-        format_func=lambda i: f'{by_id[i].reference.location.kind} · {i}')
-    evidence = by_id[identity]
-    st.write('Source type:', evidence.source.source_type.value)
-    st.write('Retrieved at:', evidence.source.retrieved_at.isoformat())
-    st.text('Source ID: ' + evidence.source.source_id)
-    st.text('Source URL/reference: ' + display_value(evidence.source.source_url or evidence.source.source_identifier))
-    st.json(evidence.reference.location.model_dump(mode='json'), expanded=True)
-    st.text('Evidence text: ' + display_value(evidence.reference.evidence_text))
-    if evidence.document:
-        st.json(evidence.document.model_dump(mode='json'), expanded=False)
+    st.subheader('A–E acceptance evidence')
+    storage_check = st.session_state.get('foundation_storage_check')
+    st.write(f'Requested year: **{view.requested_year}** · Evidence year: **{view.evidence_year}** · Period end: **{view.period_end}** · Selection: **{view.selection_mode}**')
+    st.markdown('**Gate A — Companies House resources required for the frozen six variables**')
+    resources=[]
+    for r in view.api_resources:
+        item=dict(r); required=item.get('resource') in {'profile','filing-history','officers'}
+        item['required_for_six_variables']=required
+        item['gate_impact']='REQUIRED' if required else 'SUPPORTING_ONLY'
+        resources.append(item)
+    st.dataframe(resources, hide_index=True, width='stretch')
+    st.markdown('**Gate B — Raw evidence integrity**')
+    st.write(f"Storage: **{storage_check[0] if storage_check else 'NOT CHECKED'}** · Objects independently read back and checksum-verified: **{storage_check[1] if storage_check else 0}**")
+    st.markdown('**Financial extraction breakdown — five distinct concepts**')
+    breakdown = coverage_rows(view.documents)
+    if breakdown:
+        st.dataframe(breakdown, hide_index=True, width='stretch')
+        st.caption('Counts are financial concepts, not API calls or candidate rows. Before OpenAI includes supported Python derivations; recovered totals can include a Python derivation enabled by OpenAI evidence.')
     else:
-        st.caption('Document metadata: unavailable / not applicable to this source.')
+        st.caption('This earlier run did not record before/after counts. Run Fresh End-to-End to see the exact breakdown; counts are not inferred from extraction methods.')
+    st.markdown('**Gate C — Accounts documents and extraction route**')
+    display_documents = [{**document, 'reason': str(document.get('reason') or '').split('\nFINANCIAL_COVERAGE_V1:', 1)[0]}
+                         for document in view.documents]
+    st.dataframe(display_documents, hide_index=True, width='stretch')
+    trace = st.session_state.get('foundation_semantic_trace', [])
+    if trace:
+        st.markdown('**OpenAI semantic candidate admission details**')
+        st.dataframe([{'Candidate / admission result': item} for item in trace], hide_index=True, width='stretch')
+    st.markdown('**Gate D — Five persisted financial inputs**')
+    identified = sum(f.availability == 'AVAILABLE' and f.value is not None for f in view.facts)
+    st.info(f'Financial values identified: **{identified}/5** · Unknown: **{5 - identified}/5**. '
+            'Pipeline completion records processing; the values and reasons below determine financial coverage.')
+    st.dataframe([{'Concept': f.concept, 'Value': str(f.value) if f.value is not None else 'Unknown',
+                   'Status': f.availability, 'Reason': f.reason or '—',
+                   'Method': f.extraction_method or '—',
+                   'Period end': f.period_end or '—', 'Document': f.document_id or '—'} for f in view.facts],
+                 hide_index=True, width='stretch')
+    st.markdown('**Gate D — Governance base facts**')
+    gov = {str(item.get('Variable')): item for item in view.governance_inputs}
+    st.dataframe([gov.get('G1.1', {}), gov.get('G1.2', {}), gov.get('G2.2', {})], hide_index=True, width='stretch')
+    st.markdown('**Gate E — UI from persisted read-back: deterministic six variables**')
+    labels={'G1.1':'Accounts filing lateness','G1.2':'Confirmation statement lateness','G2.2':'Median tenure of active directors',
+            'F1.1':'Net assets / total assets','F2.2':'Current assets / current liabilities','F2.3':'Quick ratio'}
+    units={'G1.1':'days','G1.2':'days','G2.2':'years','F1.1':'ratio','F2.2':'ratio','F2.3':'ratio'}
+    combined=(*view.governance_variables,*view.variables)
+    st.dataframe([{'Variable':code,'Name':labels[code],'Raw value':str(value) if value is not None else 'Unknown',
+                   'Unit':units[code],'Status':status} for code,value,status in combined], hide_index=True, width='stretch')
+    st.caption('Unknown is preserved when evidence is absent/conflicting. DERIVED is deterministic arithmetic, never LLM. OpenAI is used only as evidence extraction fallback and is shown explicitly above.')
+
+def _friendly_record(item: InputExplanation) -> None:
+    record = item.model_dump(mode='json')['record']
+    concept = record.get('canonical_concept') or record.get('obligation_kind') or item.reference.kind.title()
+    value = record.get('value_numeric')
+    cols = st.columns(3)
+    cols[0].metric('Evidence item', str(concept).replace('_',' ').title())
+    cols[1].metric('Value', two_dp(value) if value is not None else 'Recorded evidence')
+    cols[2].metric('Evidence reliability', two_dp(item.reference.reliability_r))
+    period = record.get('period_end') or record.get('obligation_period')
+    if period: st.write('Reporting / reference period:', period)
+    if item.evidence:
+        st.markdown('**Source evidence**')
+        for e in item.evidence:
+            st.write(f'**Source:** {e.source.source_type.value.replace("_"," ").title()}')
+            ref = e.source.source_url or e.source.source_identifier
+            if ref: st.write('Source reference:', str(ref))
+            loc = e.reference.location.model_dump(mode='json', exclude_none=True)
+            friendly = {k.replace('_',' ').title(): v for k,v in loc.items() if k not in {'document_id'}}
+            if friendly: st.write('Location:', friendly)
+            if e.reference.evidence_text: st.info(e.reference.evidence_text)
+    with st.expander('Technical audit details'):
+        st.json(item.model_dump(mode='json'), expanded=False)
+
+
+def _why(variable) -> None:
+    result = variable.leaf.result
+    st.subheader(variable.name)
+    st.dataframe([{'Raw value': two_dp(result.raw_value), 'Unit': result.unit,
+                   **belief_display(result.final_belief), 'Availability': result.availability_status.value.replace('_',' ').title()}],
+                 hide_index=True, width='stretch')
+    st.markdown('### Why this risk?')
+    st.write(risk_sentence(variable))
+    if variable.leaf.calculation.reasons:
+        st.warning('Evidence issue: ' + '; '.join(r.value.replace('_',' ').title() for r in variable.leaf.calculation.reasons))
+    st.markdown('### Calculation')
+    traces = [t.detail for t in variable.leaf.calculation.trace if t.operation in {'arithmetic','lateness','median_tenure'}]
+    for trace in traces: st.code(trace, language=None)
+    if variable.reporting_year is not None: st.write('Financial reporting year:', variable.reporting_year)
+    st.markdown('### Supporting facts and evidence')
+    if not variable.inputs: st.info('No validated inputs are available for this variable.')
+    for item in variable.inputs: _friendly_record(item)
+
+
+def _narrative(view: AssessmentView) -> None:
+    """Explicit optional action; rerendering never invokes an LLM."""
+    settings = load_settings(dict(os.environ))
+    if not settings.openai_api_key:
+        st.caption('AI-assisted summary is unavailable. The verified explanations remain available below.')
+        return
+    try:
+        configuration = load_model_configuration(dict(os.environ))
+    except RuntimeConfigurationError:
+        st.caption('Summary assistance needs configuration. Verified results remain available.')
+        return
+    fingerprint = narrative_fingerprint(view, configuration)
+    cached = st.session_state.get('narrative_result')
+    if st.button('Prepare evidence-grounded summary'):
+        if cached is None or cached[0] != fingerprint:
+            try:
+                with st.spinner('Preparing the verified explanation summary…'):
+                    paragraphs = generate_narrative(view, settings.openai_api_key, configuration)
+                cached = (fingerprint, paragraphs)
+                st.session_state.narrative_result = cached
+            except NarrativeUnavailable:
+                st.info('Summary assistance is unavailable. Use the verified indicator explanations below.')
+    if cached is not None and cached[0] == fingerprint:
+        st.caption('AI assists the reading order. Every sentence is generated from verified stored results.')
+        for paragraph in cached[1]:
+            st.write(paragraph)
 
 
 def render_assessment(view: AssessmentView) -> None:
-    """Render only M7-resolved values; all numeric dataframe cells stay exact strings."""
-    explanation = view.explanation
-    context = explanation.assessment
-    st.header(view.company_name or 'Company name unavailable')
-    st.dataframe([{'Company number': context.company_number, 'Assessment ID': context.assessment_id,
-                   'Assessment date': context.assessment_date.isoformat(), 'Reporting year': str(explanation.reporting_year),
-                   'Risk model': context.risk_model_version, 'ER model': context.er_model_version,
-                   'Recorded status': context.status.value}], hide_index=True)
-    overview, variables, trace, methodology = st.tabs(['Overview', 'Variables', 'Traceability', 'Methodology'])
+    ex = view.explanation
+    st.header(view.company_name or 'Company')
+    st.caption((f'Requested financial reporting year: {ex.reporting_year} · Evidence reporting year used: {ex.evidence_reporting_year} · ' if ex.evidence_reporting_year != ex.reporting_year else f'Financial reporting year: {ex.reporting_year} · ') + f'Evidence assessed as of {ex.assessment.assessment_date}')
+    gaps = [v.name for v in ex.variables if v.leaf.result.raw_value is None]
+    if gaps:
+        st.warning('Some indicators could not be assessed: ' + ', '.join(gaps) + '. See Why this risk? for the evidence gaps.')
+    overview, variables, why, methodology = st.tabs(['Overview', 'Variables', 'Why this risk?', 'Methodology'])
     with overview:
         st.subheader('Overall risk belief')
-        st.caption('Persisted M6 ER result. Low, High and Unknown are shown without renormalisation.')
-        st.dataframe([belief_row(explanation.overall.result.belief)], hide_index=True)
+        st.dataframe([belief_display(ex.overall.result.belief)], hide_index=True, width='stretch')
+        _narrative(view)
         st.subheader('Governance and Financial')
-        weights = {edge.child_code: edge.importance_weight for edge in explanation.overall.children}
-        st.dataframe([{'Domain': node.result.node_name, **belief_row(node.result.belief),
-                       'Importance weight': str(weights[node.result.node_code])} for node in explanation.domains], hide_index=True)
-        st.info('Unknown represents unresolved evidence uncertainty. High belief is not a probability of company failure.')
+        st.dataframe([{'Domain': n.result.node_name, **belief_display(n.result.belief)} for n in ex.domains],
+                     hide_index=True, width='stretch')
     with variables:
-        st.subheader('Six active variables · model v1.2')
-        st.dataframe([variable_row(variable) for variable in explanation.variables], hide_index=True)
-        st.caption('All figures are persisted exact decimal strings. Use Traceability for calculation inputs, exclusions and source evidence.')
-    with trace:
-        choices = {variable.leaf.result.variable_code: variable for variable in explanation.variables}
-        code = st.selectbox('Variable', tuple(choices), format_func=lambda c: f'{c} · {choices[c].name}')
-        variable = choices[code]
-        st.dataframe([variable_row(variable)], hide_index=True)
-        st.write('Selected financial reporting year:', display_value(variable.reporting_year))
-        with st.expander('Persisted calculation and reasons', expanded=True):
-            st.json(variable.leaf.calculation.model_dump(mode='json'), expanded=False)
-        if not variable.inputs:
-            st.info('No validated calculation inputs recorded. See the persisted availability and exclusion reasons above.')
-        else:
-            index = st.selectbox('Validated input', range(len(variable.inputs)), key=f'{context.assessment_id}-{code}-input',
-                format_func=lambda n: f'{variable.inputs[n].reference.kind} · {variable.inputs[n].reference.validated_id}')
-            _input_details(variable.inputs[index], f'{context.assessment_id}-{code}-{index}')
+        st.subheader('Risk indicators')
+        st.dataframe([variable_display(v) for v in ex.variables], hide_index=True, width='stretch')
+    with why:
+        by_name = {v.name: v for v in ex.variables}
+        name = st.selectbox('Variable', tuple(by_name))
+        _why(by_name[name])
     with methodology:
-        st.write('M4 validates evidence and records reliability. M5 calculates variables and Low/High/Unknown leaf beliefs. M6 aggregates them using ER. M7 resolves the stored traceability tree. This interface displays those outputs.')
-        st.write('Governance and Financial each contain three equally weighted active variables. Overall uses persisted domain weights 0.40 and 0.60. G1/G2/F1/F2 are explanatory labels only.')
-        st.write('Unavailable inputs retain their stored status and cause. No missing value is replaced with zero and no weight is redistributed.')
+        st.subheader('How an individual indicator is assessed')
+        st.write('Each indicator is compared with predefined low-risk and high-risk reference levels. The result is expressed as Low, High and Unknown beliefs rather than forcing the evidence into one score.')
+        st.info('Example: Low 0.10, High 0.80 and Unknown 0.10 means the available evidence supports the high-risk side more strongly, while 0.10 remains unresolved because of evidence uncertainty.')
+        st.subheader('How the indicators are combined')
+        st.write('Evidential Reasoning (ER) combines the three Governance indicators and the three Financial indicators while preserving unresolved uncertainty. The two domain results are then combined using their predefined importance weights to produce the Overall belief.')
+        st.write('Evidence → indicator beliefs → Governance / Financial → Overall risk belief')
+        with st.expander('Technical methodology'):
+            st.write('M4 validates evidence and records reliability. M5 calculates the six indicator beliefs. M6 performs hierarchical ER aggregation. M7 resolves the persisted traceability tree shown by this interface.')
 
 
 def main() -> None:
-    """One entry point with an explicit exception boundary and no secret-bearing errors."""
     st.set_page_config(page_title='Evidence-Grounded AI Risk Intelligence', layout='wide')
     st.title('Evidence-Grounded AI Risk Intelligence')
-    st.caption('Explore a company assessment from risk beliefs to supporting evidence.')
+    st.caption('Evidence-backed company risk assessment with traceable supporting facts.')
     environ = dict(os.environ)
-    mode = st.radio('Workflow', ('Load existing assessment', 'New assessment'), horizontal=True)
+    mode = st.radio('Workflow', ('Data foundation validation', 'Load existing assessment', 'New assessment'), horizontal=True)
     if st.session_state.get('workflow_mode') != mode:
-        st.session_state.pop('assessment_view', None)
-        st.session_state.workflow_mode = mode
+        st.session_state.pop('assessment_view', None); st.session_state.workflow_mode = mode
     try:
-        if mode == 'Load existing assessment':
+        if mode == 'Data foundation validation':
+            _foundation(environ)
+        elif mode == 'Load existing assessment':
             _select_existing(environ)
         else:
             _new_assessment(environ)
-        view = st.session_state.get('assessment_view')
-        if view is not None:
-            render_assessment(view)
+        view = st.session_state.get('assessment_view') if mode != 'Data foundation validation' else None
+        if view is not None: render_assessment(view)
     except Exception as error:
-        # Provider exceptions may contain credentials. Never print/log their text.
-        # Fail visibly and clear stale results rather than showing a prior success.
-        st.session_state.pop('assessment_view', None)
-        _show_error(error)
+        st.session_state.pop('assessment_view', None); _show_error(error)

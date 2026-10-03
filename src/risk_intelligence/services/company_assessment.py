@@ -135,16 +135,20 @@ def run_company_assessment(database: Database, *, number: str, assessment_date: 
         # Re-run M3 against immutable raw evidence with the current parser/admission
         # versions.  An offline M3 service fails explicitly if any filing lacks
         # reusable raw bytes; it never silently falls back to network retrieval.
-        m3.ingest(number, assessment_date, m3_id, max_documents=max_documents)
+        m3.ingest(number, assessment_date, m3_id, reporting_year=reporting_year, max_documents=max_documents)
         mode = "REUSED_M2_REPROCESSED_M3"
     else:
         if m2 is None or m3 is None:
             raise ValueError("Live mode requires both production ingestion services")
         m2_id, m3_id = run_id + "-m2", run_id + "-m3"
         m2.ingest(number, assessment_date, m2_id)
-        m3.ingest(number, assessment_date, m3_id, max_documents=max_documents)
+        m3.ingest(number, assessment_date, m3_id, reporting_year=reporting_year, max_documents=max_documents)
         mode = "LIVE"
     _check_ingestion(database, number, assessment_date, m2_id, m3_id)
+    selections = database.query("SELECT * FROM accounts_run_selection WHERE processing_run_id=?", (m3_id,))
+    if len(selections) != 1 or int(selections[0]["requested_reporting_year"]) != reporting_year:
+        raise IntegrityError("M3 reporting year selection does not match the requested assessment")
+    evidence_reporting_year = int(selections[0]["evidence_reporting_year"])
     company = SqlCompanyRepository(database).get_by_company_number(number)
     if company is None:
         raise IntegrityError("Production ingestion did not establish company identity")
@@ -182,6 +186,7 @@ def run_company_assessment(database: Database, *, number: str, assessment_date: 
         status=AssessmentStatus.PARTIAL, risk_model_version=RISK_MODEL_VERSION,
         reliability_model_version=POLICY_VERSION, er_model_version=RISK_MODEL_VERSION, data_dictionary_version="1"))
     runs.save_financial_reporting_year(assessment_id, reporting_year)
+    runs.save_financial_evidence_year(assessment_id, evidence_reporting_year)
     RiskVariableService(database).calculate_and_persist(assessment_id=assessment_id, scope=scope, calculated_at=calculated_at)
     leaves = persisted_leaves(database, assessment_id)
     if database.query("PRAGMA foreign_key_check"):

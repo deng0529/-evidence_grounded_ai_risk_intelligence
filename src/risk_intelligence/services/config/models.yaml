@@ -1,0 +1,8 @@
+# Model names belong here; API keys remain in secure environment settings.
+version: m8-extraction-v1
+extraction_model: gpt-5-mini
+explanation_model: gpt-5-mini
+# Exact HTTPS download hosts only. Populate from verified provider redirect evidence.
+# Empty means redirect downloads are refused; no wildcard or arbitrary host fallback.
+download_hosts:
+  - s3.eu-west-2.amazonaws.com

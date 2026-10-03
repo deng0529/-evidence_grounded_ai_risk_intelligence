@@ -1,20 +1,17 @@
-"""Partial deterministic extraction must not bypass bounded, cached fallback."""
-
-from datetime import UTC, datetime
+"""Foundation PDF route: filed PDF -> OpenAI multimodal -> semantic facts; no OCR gate."""
+from datetime import UTC, date, datetime
 from decimal import Decimal
 import json
 from pathlib import Path
 
 import pytest
 
-from risk_intelligence.domain.enums import ExtractionMethod, ProcessingStatus, RetrievalStatus, SourceType, TriggerType
+from risk_intelligence.domain.enums import ProcessingStatus, RetrievalStatus, SourceType, TriggerType
 from risk_intelligence.domain.evidence import Company, Document, RawEvidence, Source
 from risk_intelligence.domain.runs import ProcessingRun
-from risk_intelligence.ingestion.accounts.llm import Candidate
-from risk_intelligence.ingestion.accounts.fallback import page_lines
-from risk_intelligence.ingestion.accounts.pdf import PageText, Word, extract_pdf, PARSER_VERSION
+from risk_intelligence.ingestion.accounts.llm import Candidate, PdfSemanticCandidate
+from risk_intelligence.ingestion.accounts.pdf_semantic import admit_pdf_candidate
 from risk_intelligence.ingestion.accounts.service import AccountsIngestion
-from risk_intelligence.ingestion.companies_house.client import ParseError
 from risk_intelligence.persistence.assessment_repository import SqlAssessmentRepository
 from risk_intelligence.persistence.company_repository import SqlCompanyRepository
 from risk_intelligence.persistence.connection import open_sqlite
@@ -23,23 +20,123 @@ from risk_intelligence.storage.local import LocalStorage
 from risk_intelligence.storage.objects import checksum, object_key
 
 
-class Model:
-    """Offline provider substitute; cache/orchestration/storage remain real."""
+def candidate(concept='CURRENT_LIABILITIES', value='(10,583,194)', *, kind='DIRECT', label=None, page=1):
+    labels = {
+        'CURRENT_LIABILITIES':'Creditors: amounts falling due within one year',
+        'NET_ASSETS':'Net assets','CURRENT_ASSETS':'Current assets','INVENTORY':'Stocks','TOTAL_ASSETS':'Total assets'}
+    return Candidate(page=page,row_start=1,row_end=1,concept=concept,kind=kind,scope='COMPANY',support='SUPPORTED',
+        label=label or labels[concept],period_end='2025-12-31',currency='GBP',unit='GBP',raw_value=value,
+        value=value.strip('()').replace(',',''),quote=f"{label or labels[concept]} {value}")
 
+
+def test_direct_pdf_admission_uses_substance_not_ocr_locator():
+    fact = admit_pdf_candidate(candidate(), document_id='d', company_number='ZZ000003',
+        rendered_pages=frozenset({1,2}), requested=frozenset({'CURRENT_LIABILITIES'}), requested_reporting_year=2025)
+    assert fact.value == Decimal('10583194')
+    assert fact.source_concept == 'llm-semantic:CURRENT_LIABILITIES'
+    assert fact.source_scope == 'COMPANY'
+    assert fact.transformation.startswith('openai-pdf-semantic')
+
+
+def test_total_assets_less_current_liabilities_stays_bridge():
+    c = candidate('TOTAL_ASSETS','1,649,700',kind='COMPONENT',label='Total assets less current liabilities')
+    fact = admit_pdf_candidate(c, document_id='d', company_number='ZZ000003', rendered_pages=frozenset({1}),
+        requested=frozenset({'TOTAL_ASSETS'}), requested_reporting_year=2025)
+    assert fact.source_concept == 'pdf-component:total assets less current liabilities'
+    assert fact.value == Decimal('1649700')
+
+
+def test_group_or_comparative_semantics_fail_closed():
+    with pytest.raises(Exception):
+        admit_pdf_candidate(candidate().model_copy(update={'scope':'GROUP'}), document_id='d', company_number='ZZ000003',
+            rendered_pages=frozenset({1}), requested=frozenset({'CURRENT_LIABILITIES'}), requested_reporting_year=2025)
+
+
+def test_year_only_candidate_inherits_authoritative_ixbrl_period():
+    c = candidate('INVENTORY', '4,048,511').model_copy(update={'period_end':'2025'})
+    fact = admit_pdf_candidate(c, document_id='d', company_number='ZZ000003',
+        rendered_pages=frozenset({1}), requested=frozenset({'INVENTORY'}), requested_reporting_year=2025,
+        authoritative_period_end=date(2025, 9, 30))
+    assert fact.value == Decimal('4048511')
+    assert fact.period.period_end == date(2025, 9, 30)
+
+def test_other_displayed_year_is_retained_instead_of_rejected():
+    c = candidate('INVENTORY', '4,048,511').model_copy(update={'period_end':'2024'})
+    fact = admit_pdf_candidate(c, document_id='d', company_number='ZZ000003',
+        rendered_pages=frozenset({1}), requested=frozenset({'INVENTORY'}), requested_reporting_year=2025,
+        authoritative_period_end=date(2025, 9, 30))
+    assert fact.period.period_end == date(2024, 12, 31)
+    assert fact.value == Decimal('4048511')
+
+
+class Model:
     enabled = True
     model = 'configured-test-model'
-    config_version = 'test-v2'
+    config_version = 'test-direct-pdf-v1'
+    def __init__(self, candidates): self.candidates, self.calls = candidates, []
+    def extract_pdf_file(self, evidence, pdf):
+        import pymupdf
+        with pymupdf.open(stream=pdf, filetype='pdf') as document:
+            self.calls.append((json.loads(evidence), tuple(range(1,len(document)+1))))
+        return json.dumps({'status':'completed','output':json.dumps({'candidates':[
+            PdfSemanticCandidate.model_validate(c.model_dump(exclude={'row_start','row_end'})).model_dump()
+            for c in self.candidates]})}).encode()
 
-    def __init__(self, candidates: list[Candidate], *, fails: bool = False) -> None:
-        self.candidates, self.fails, self.calls = candidates, fails, []
 
-    def extract(self, evidence: str) -> bytes:
-        self.calls.append(json.loads(evidence))
-        if self.fails:
-            raise ParseError('Synthetic unavailable provider')
-        return json.dumps({'status':'completed','output':json.dumps({
-            'candidates':[c.model_dump() for c in self.candidates], 'unresolved':not self.candidates})}).encode()
+def _pdf_bytes(pages=1):
+    import pymupdf
+    doc=pymupdf.open(); page=doc.new_page(); page.insert_text((72,72),'Company balance sheet at 31 December 2025')
+    page.insert_text((72,100),'Current assets 11,381,830  Current liabilities 10,583,194  Stocks 3,273,856')
+    for _ in range(pages - 1): doc.new_page()
+    data=doc.tobytes(); doc.close(); return data
 
+
+@pytest.fixture
+def direct_context(tmp_path: Path, request):
+    now=datetime(2026,9,29,tzinfo=UTC); content=_pdf_bytes(getattr(request, 'param', 1))
+    with open_sqlite() as db:
+        migrate(db)
+        SqlCompanyRepository(db).save(Company(company_id='c',company_number='ZZ000003',company_name='SYNTHETIC'))
+        SqlAssessmentRepository(db).save_processing_run(ProcessingRun(processing_run_id='r1',company_id='c',
+            company_number='ZZ000003',started_at=now,status=ProcessingStatus.RUNNING,current_stage='M3',
+            trigger_type=TriggerType.LIVE,app_version='test'))
+        db.execute('INSERT INTO accounts_run VALUES (?,?,?,?,?)',('r1','2026-09-29',5,'financial-concepts-v4','RUNNING'))
+        source=Source(source_id='s',company_id='c',company_number='ZZ000003',source_type=SourceType.COMPANIES_HOUSE_PDF,
+            source_name='Synthetic',source_identifier='test',retrieved_at=now,retrieval_status=RetrievalStatus.SUCCESS,
+            processing_run_id='r1',checksum=checksum(content))
+        key=object_key(source,checksum(content),'application/pdf')
+        doc=Document(document_id='d',company_id='c',company_number='ZZ000003',source_id='s',document_type='ACCOUNTS',
+            representation_type='application/pdf',object_path=key,checksum=checksum(content))
+        raw=RawEvidence(raw_evidence_id='raw',source_id='s',document_id='d',object_path=key,checksum=checksum(content),
+            retrieved_at=now,processing_run_id='r1',media_type='application/pdf')
+        model=Model([candidate('NET_ASSETS','1,083,960'), candidate('CURRENT_ASSETS','11,381,830'),
+            candidate('CURRENT_LIABILITIES','(10,583,194)'), candidate('INVENTORY','3,273,856'),
+            candidate('TOTAL_ASSETS','1,649,700',kind='COMPONENT',label='Total assets less current liabilities')])
+        service=AccountsIngestion(db,LocalStorage(tmp_path/'raw'),None,llm=model)
+        service.evidence.save(source,raw,content,doc)
+        yield service,raw,model
+
+
+def test_pdf_service_calls_openai_directly_without_ocr_and_persists_derivation(direct_context):
+    service,raw,model=direct_context
+    result,_=service._extract(raw,'r1','ZZ000003',reporting_year=2025)
+    assert len(model.calls)==1
+    assert model.calls[0][0]['unresolved_concepts']==['NET_ASSETS','TOTAL_ASSETS','CURRENT_ASSETS','CURRENT_LIABILITIES','INVENTORY']
+    assert model.calls[0][1]==(1,)
+    assert len(result.facts)==5
+    assert all(f.transformation and f.transformation.startswith('openai-pdf-semantic') for f in result.facts)
+    ids=service._save_facts(raw,result)
+    rows=service.database.query("SELECT canonical_concept,value_numeric,extraction_method FROM fact WHERE canonical_concept IN ('CURRENT_LIABILITIES','TOTAL_ASSETS')")
+    got={r['canonical_concept']:(str(r['value_numeric']),r['extraction_method']) for r in rows}
+    assert got['CURRENT_LIABILITIES'][0]=='10583194'
+    assert got['TOTAL_ASSETS'][0]=='12232894'
+    assert got['TOTAL_ASSETS'][1]=='DERIVED'
+    assert ids
+
+# Compatibility fixture for persistence/scope tests. These tests exercise stored source
+# semantics directly and do not invoke the retired OCR extraction route.
+from risk_intelligence.domain.enums import ExtractionMethod
+from risk_intelligence.ingestion.accounts.pdf import PageText, Word
 
 @pytest.fixture
 def fallback_context(tmp_path: Path):
@@ -50,7 +147,7 @@ def fallback_context(tmp_path: Path):
                           (80,310,'500'),(80,410,'400')):
         words.append(Word(x=float(right-30),y=float(y),right=float(right),text=text))
     page = PageText(page=2,words=tuple(words),method=ExtractionMethod.PDF_OCR_DETERMINISTIC)
-    now = datetime(2026,9,29,tzinfo=UTC)
+    now = datetime(2026,9,29,tzinfo=UTC); content=b'%PDF-synthetic-persistence-fixture'
     with open_sqlite() as db:
         migrate(db)
         SqlCompanyRepository(db).save(Company(company_id='c',company_number='ZZ000003',company_name='SYNTHETIC'))
@@ -58,209 +155,75 @@ def fallback_context(tmp_path: Path):
             SqlAssessmentRepository(db).save_processing_run(ProcessingRun(processing_run_id=run_id,company_id='c',
                 company_number='ZZ000003',started_at=now,status=ProcessingStatus.RUNNING,current_stage='M3',
                 trigger_type=TriggerType.LIVE,app_version='test'))
-            db.execute('INSERT INTO accounts_run VALUES (?,?,?,?,?)',(run_id,'2026-09-29',5,'financial-concepts-v1','RUNNING'))
-        content = b'%PDF-synthetic-verified-test-evidence'
-        source = Source(source_id='s',company_id='c',company_number='ZZ000003',source_type=SourceType.COMPANIES_HOUSE_PDF,
+            db.execute('INSERT INTO accounts_run VALUES (?,?,?,?,?)',(run_id,'2026-09-29',5,'financial-concepts-v4','RUNNING'))
+        source=Source(source_id='s',company_id='c',company_number='ZZ000003',source_type=SourceType.COMPANIES_HOUSE_PDF,
             source_name='Synthetic',source_identifier='test',retrieved_at=now,retrieval_status=RetrievalStatus.SUCCESS,
             processing_run_id='r1',checksum=checksum(content))
-        key = object_key(source,checksum(content),'application/pdf')
-        doc = Document(document_id='d',company_id='c',company_number='ZZ000003',source_id='s',document_type='ACCOUNTS',
+        key=object_key(source,checksum(content),'application/pdf')
+        doc=Document(document_id='d',company_id='c',company_number='ZZ000003',source_id='s',document_type='ACCOUNTS',
             representation_type='application/pdf',object_path=key,checksum=checksum(content))
-        raw = RawEvidence(raw_evidence_id='raw',source_id='s',document_id='d',object_path=key,checksum=checksum(content),
+        raw=RawEvidence(raw_evidence_id='raw',source_id='s',document_id='d',object_path=key,checksum=checksum(content),
             retrieved_at=now,processing_run_id='r1',media_type='application/pdf')
-        service = AccountsIngestion(db,LocalStorage(tmp_path/'raw'),None,ocr_version='test-ocr')
+        service=AccountsIngestion(db,LocalStorage(tmp_path/'raw'),None,ocr_version='test-ocr')
         service.evidence.save(source,raw,content,doc)
-        service.cache.run(raw,'r1','OCR','test-ocr',{'dpi':200,'language':'eng','pymupdf':'1.28.2'},
-                          lambda _: json.dumps([page.model_dump(mode='json')]).encode())
-        yield service, raw, page
+        yield service,raw,page
+
+def test_candidate_without_printed_year_inherits_requested_year_without_date_gate():
+    c = candidate('INVENTORY', '4,048,511').model_copy(update={'period_end':''})
+    fact = admit_pdf_candidate(c, document_id='d', company_number='ZZ000003',
+        rendered_pages=frozenset({1}), requested=frozenset({'INVENTORY'}), requested_reporting_year=2023,
+        authoritative_period_end=date(2023, 9, 30))
+    assert fact.value == Decimal('4048511')
+    assert fact.period.period_end.year == 2023
 
 
-def supported(page: PageText) -> Candidate:
-    return Candidate(page=2,row_start=5,row_end=6,concept='CURRENT_LIABILITIES',kind='DIRECT',scope='COMPANY',
-        support='SUPPORTED',label='Creditors: amounts falling due within one year',period_end='2025-12-31',
-        currency='GBP',unit='GBP',raw_value='(100)',value='100',quote='\n'.join(page_lines(page)[4:6]))
+def test_explicit_target_year_wins_over_comparative_year_rule():
+    c = candidate('CURRENT_ASSETS', '7,091,772').model_copy(update={'period_end':'2023'})
+    fact = admit_pdf_candidate(c, document_id='d', company_number='ZZ000003',
+        rendered_pages=frozenset({1}), requested=frozenset({'CURRENT_ASSETS'}), requested_reporting_year=2023,
+        authoritative_period_end=date(2023, 9, 30))
+    assert fact.period.period_end.year == 2023
 
 
-def test_partial_deterministic_triggers_verified_fallback_and_reuses_identical_result(fallback_context) -> None:
-    service,raw,page = fallback_context
-    service.llm = model = Model([supported(page)])
-    first,_ = service._extract(raw,'r1','ZZ000003')
-    assert len(model.calls) == 1
-    assert 'CURRENT_LIABILITIES' in model.calls[0]['unresolved_concepts']
-    assert 'NET_ASSETS' not in model.calls[0]['unresolved_concepts']
-    assert [p['page'] for p in model.calls[0]['pages']] == [2]
-    assert len(first.facts) == 3  # Two deterministic facts plus admitted fallback.
-    assert first.facts[-1].value == Decimal(100)
-    assert first.facts[-1].statement_context == 'Company balance sheet'
-    assert first.facts[-1].source_scope == 'COMPANY'
-    assert first.fallback.decisions[0].status == 'AVAILABLE'
-    service._save_facts(raw,first)
-    before = service.database.query('SELECT count(*) AS n FROM fact')[0]['n']
-    second,_ = service._extract(raw,'r2','ZZ000003')
-    service._save_facts(raw,second)
-    assert second == first and len(model.calls) == 1
-    assert service.database.query('SELECT count(*) AS n FROM fact')[0]['n'] == before
-
-
-def test_located_heading_roundtrip_reaches_m4_without_strength_uplift(fallback_context):
-    from risk_intelligence.persistence.accounts_repository import AccountsRepository
-    from risk_intelligence.validation.financial_service import FinancialValidationService
-    from datetime import date
-
-    service, raw, page = fallback_context
-    service.llm = Model([supported(page)])
-    extraction, _ = service._extract(raw, 'r1', 'ZZ000003')
-    ids = service._save_facts(raw, extraction)
-    repository = AccountsRepository(service.database)
-    fact = next(repository.canonical.get(identity) for identity in ids
-                if repository.canonical.get(identity).canonical_concept == 'CURRENT_LIABILITIES'
-                and repository.canonical.get(identity).value_numeric is not None)
-    source = repository.get_observation_lineage(fact.financial_fact_id)[1][0]
-    assert source.statement_context == 'Company balance sheet' and source.source_scope == 'COMPANY'
-    result = FinancialValidationService(service.database).evaluate_and_persist(
-        validated_fact_id='validated-liability', fact_id=fact.financial_fact_id,
-        assessment_date=date(2026,9,29), analytical_scope='COMPANY')
-    assert result.assessment.validation.admissible
-    assert result.assessment.calculation.reliability_r == Decimal('.8075')
-
-
-def test_current_m3_publishes_derived_sql_proof_and_m4_requires_it(fallback_context, monkeypatch):
-    from datetime import date
-    from tests.m3.test_asset_side import inspected, derivations
-    from risk_intelligence.persistence.accounts_repository import AccountsRepository
-    from risk_intelligence.persistence.connection import IntegrityError
-    from risk_intelligence.validation.financial_service import FinancialValidationService
-
-    service, raw, _ = fallback_context
-    result = inspected()
-    result = result.model_copy(update={'interpretations': tuple(derivations(result))})
-    ids = service._save_facts(raw, result)
-    repository = AccountsRepository(service.database)
-    fact = next(repository.canonical.get(identity) for identity in ids
-                if repository.canonical.get(identity).canonical_concept == 'TOTAL_ASSETS')
-    assert repository.get_derivation_proof(fact.financial_fact_id) is not None
-    validator = FinancialValidationService(service.database)
-    assessment = validator.evaluate(fact_id=fact.financial_fact_id, assessment_date=date(2026,9,29), analytical_scope='COMPANY')
-    assert assessment.assessment.validation.admissible
-    monkeypatch.setattr(validator.accounts, 'get_derivation_proof', lambda identity: None)
-    with pytest.raises(IntegrityError, match='no completeness proof'):
-        validator.evaluate(fact_id=fact.financial_fact_id, assessment_date=date(2026,9,29), analytical_scope='COMPANY')
-
-
-@pytest.mark.parametrize('change',[{'raw_value':'(999)','value':'999'},{'scope':'GROUP'},
-                                  {'concept':'TOTAL_ASSETS'}])
-def test_rejected_candidate_preserves_deterministic_facts_and_typed_failure(fallback_context,change) -> None:
-    service,raw,page = fallback_context
-    service.llm = Model([supported(page).model_copy(update=change)])
-    result,_ = service._extract(raw,'r1','ZZ000003')
-    assert len(result.facts) == 2 and result.fallback.decisions[0].status == 'VALIDATION_FAILED'
-    service._save_facts(raw,result)
-    concept = change.get('concept','CURRENT_LIABILITIES')
-    row = service.database.query('SELECT value_numeric,availability_status FROM fact WHERE canonical_concept=? '
-                                 'AND period_end=?',(concept,'2025-12-31'))[0]
-    assert row == {'value_numeric':None,'availability_status':'VALIDATION_FAILED'}
-
-
-@pytest.mark.parametrize('mode',['unresolved','disabled','provider_failure'])
-def test_unavailable_or_unresolved_fallback_keeps_valid_facts_and_nulls(fallback_context,mode) -> None:
-    service,raw,page = fallback_context
-    service.llm = model = Model([],fails=mode=='provider_failure')
-    if mode == 'disabled':
-        model.enabled = False
-    result,_ = service._extract(raw,'r1','ZZ000003')
-    assert len(result.facts) == 2
-    assert len(model.calls) == (0 if mode == 'disabled' else 1)
-    service._save_facts(raw,result)
-    row = service.database.query("SELECT value_numeric,availability_status FROM fact WHERE canonical_concept='CURRENT_LIABILITIES' AND period_end='2025-12-31'")[0]
-    assert row == {'value_numeric':None,'availability_status':'EXTRACTION_FAILED'}
-    service._extract(raw,'r2','ZZ000003')
-    assert len(model.calls) == (0 if mode == 'disabled' else 1)
-
-
-def test_all_required_deterministic_inputs_available_avoids_model(fallback_context) -> None:
-    service,raw,page = fallback_context
-    result = extract_pdf((page,),'d','ZZ000003')
-    labels = ('current assets','current liabilities','inventory','net assets','total assets','total interest-bearing debt')
-    facts = tuple(fact.model_copy(update={'source_fact_id':f'{i}-{j}', 'source_concept':'pdf-label:'+label})
-                  for i,label in enumerate(labels) for j,fact in enumerate(result.facts))
-    result = result.model_copy(update={'facts':facts,'complete':True})
-    service.cache.run(raw,'r1','PARSE',PARSER_VERSION,{'ocr_version':'test-ocr'},
-                      lambda _:result.model_dump_json().encode())
-    service.llm = model = Model([supported(page)])
-    actual,_ = service._extract(raw,'r1','ZZ000003')
-    assert not model.calls and actual.facts == result.facts
-
-
-def test_failed_component_is_not_a_failed_canonical_total_candidate(fallback_context) -> None:
-    service,raw,page = fallback_context
-    service.llm = Model([supported(page).model_copy(update={'kind':'COMPONENT','concept':'TOTAL_ASSETS'})])
-    result,_ = service._extract(raw,'r1','ZZ000003')
-    assert result.fallback.decisions[0].status == 'VALIDATION_FAILED'
-    service._save_facts(raw,result)
-    row = service.database.query("SELECT value_numeric,availability_status FROM fact WHERE canonical_concept='TOTAL_ASSETS' AND period_end='2025-12-31'")[0]
-    assert row == {'value_numeric':None,'availability_status':'EXTRACTION_FAILED'}
-
-
-def test_derived_asset_and_debt_lineage_persist_with_rule_and_order(fallback_context) -> None:
-    from test_asset_side import inspected
-    from risk_intelligence.ingestion.accounts.interpretation import VERSION, deterministic_proposals
-    from risk_intelligence.ingestion.accounts.derivation import DERIVATION_VERSION, COMPLETENESS_QUOTE
-    from risk_intelligence.ingestion.accounts.models import DebtSchedule
-
-    service,raw,_ = fallback_context
-    result = inspected()
-    result = result.model_copy(update={'interpretations':deterministic_proposals(result,service.registry)})
-    service._save_facts(raw,result)
-    rows = service.database.query("SELECT l.* FROM financial_observation_lineage l JOIN fact f ON f.fact_id=l.fact_id WHERE f.canonical_concept='TOTAL_ASSETS'")
-    assert len(rows) == 2
-    assert all(row['origin']=='DERIVED' and row['derivation_version']==VERSION for row in rows)
-    for row,proof in zip(rows,result.proofs,strict=True):
-        components = service.database.query('SELECT source_fact_id FROM financial_observation_component WHERE fact_id=? ORDER BY position',(row['fact_id'],))
-        assert tuple(item['source_fact_id'] for item in components) == proof.source_fact_ids
-        assert proof.proof_id in service.repository.canonical.get(row['fact_id']).evidence_ids
-
-        persisted_proof = service.database.query(
-            'SELECT proof_id,document_id,target_concept,relationship,page,row_start,row_end,evidence_text '
-            'FROM financial_derivation_proof WHERE fact_id=?',
-            (row['fact_id'],))
-        assert persisted_proof == [{
-            'proof_id': proof.proof_id,
-            'document_id': proof.document_id,
-            'target_concept': proof.target,
-            'relationship': proof.relationship,
-            'page': proof.page,
-            'row_start': proof.row_start,
-            'row_end': proof.row_end,
-            'evidence_text': proof.evidence_text,
-        }]
-
-        persisted_checks = service.database.query(
-            'SELECT source_fact_id FROM financial_derivation_cross_check '
-            'WHERE fact_id=? ORDER BY position',
-            (row['fact_id'],))
-        assert tuple(item['source_fact_id'] for item in persisted_checks) == proof.cross_check_ids
-
-        restored_proof = service.repository.get_derivation_proof(row['fact_id'])
-        assert restored_proof == proof
-
-        restored_lineage = service.repository.get_observation_lineage(row['fact_id'])
-        assert restored_lineage is not None
-        lineage, restored_components = restored_lineage
-        assert lineage['origin'] == 'DERIVED'
-        assert lineage['mapping_version'] == service.registry.version
-        assert lineage['derivation_version'] == VERSION
-        assert tuple(
-            component.source_fact_id for component in restored_components
-        ) == proof.source_fact_ids
-    base = result.facts[0]
-    debt = tuple(base.model_copy(update={'source_fact_id':f'debt-{i}','evidence_id':f'debt-e-{i}',
-        'source_concept':'pdf-component:'+label,'source_label':label,'value':Decimal(value),'raw_value':value})
-        for i,(label,value) in enumerate((('bank loans','100'),('finance lease liabilities','20'))))
-    schedule = DebtSchedule(source_fact_ids=tuple(f.source_fact_id for f in debt),completeness_quote=COMPLETENESS_QUOTE,page=2)
-    partial = result.model_copy(update={'facts':debt,'proofs':(),'interpretations':(),'debt_schedules':()})
-    ids = service._save_facts(raw,partial)
-    assert all(service.repository.canonical.get(i).value_numeric is None for i in ids)
-    service._save_facts(raw,partial.model_copy(update={'debt_schedules':(schedule,)}))
-    row = service.database.query('SELECT * FROM financial_observation_lineage WHERE derivation_version=?',(DERIVATION_VERSION,))[0]
-    assert service.repository.canonical.get(row['fact_id']).value_numeric == Decimal('120')
+def test_empty_semantic_response_persists_not_disclosed_reasons(direct_context):
+    service, raw, model = direct_context
+    model.candidates = []
+    result, _ = service._extract(raw, 'r1', 'ZZ000003', reporting_year=2025)
+    service._save_facts(raw, result)
+    rows = service.database.query("SELECT f.canonical_concept,f.availability_status,r.reason_code FROM fact f "
+        "JOIN financial_fact_missing_reason r ON r.fact_id=f.fact_id WHERE f.canonical_concept='INVENTORY'")
+    assert rows == [{'canonical_concept':'INVENTORY', 'availability_status':'NOT_DISCLOSED',
+                     'reason_code':'NOT_FOUND_IN_SELECTED_ACCOUNTS'}]
     assert not service.database.query('PRAGMA foreign_key_check')
+
+
+def test_provider_failure_persists_extraction_failed_without_stopping(direct_context):
+    from risk_intelligence.ingestion.companies_house.client import ParseError
+    service, raw, model = direct_context
+    def fail(*args):
+        raise ParseError('Synthetic provider failure')
+    model.extract_pdf_file = fail
+    result, _ = service._extract(raw, 'r1', 'ZZ000003', reporting_year=2025)
+    service._save_facts(raw, result)
+    rows = service.database.query("SELECT f.availability_status,r.reason_code FROM fact f "
+        "JOIN financial_fact_missing_reason r ON r.fact_id=f.fact_id WHERE f.canonical_concept='INVENTORY'")
+    assert rows == [{'availability_status':'EXTRACTION_FAILED','reason_code':'EXTRACTION_FAILED'}]
+
+
+@pytest.mark.parametrize('direct_context', [35], indirect=True)
+def test_complete_35_page_pdf_reaches_model_including_last_page_note(direct_context):
+    service, raw, model = direct_context
+    model.candidates = [candidate('INVENTORY', '3,273,856', page=35)]
+    result, _ = service._extract(raw, 'r1', 'ZZ000003', reporting_year=2025)
+    assert model.calls[0][1] == tuple(range(1, 36))
+    assert result.facts[0].page == 35 and result.facts[0].value == 3273856
+
+
+def test_pdf_service_selects_closest_supported_company_column(direct_context):
+    service, raw, model = direct_context
+    model.candidates = [candidate('INVENTORY', '111').model_copy(update={'period_end':'2023'}),
+        candidate('INVENTORY', '222').model_copy(update={'period_end':'2024'}),
+        candidate('INVENTORY', '999').model_copy(update={'period_end':'2025', 'scope':'GROUP'})]
+    result, _ = service._extract(raw, 'r1', 'ZZ000003', reporting_year=2025)
+    assert len(result.facts) == 1
+    assert result.facts[0].value == 222 and result.periods[0].period_end.year == 2024

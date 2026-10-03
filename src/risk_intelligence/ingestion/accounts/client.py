@@ -40,6 +40,23 @@ def representations(metadata: dict[str, object]) -> tuple[str, ...]:
     return tuple(media for media in MEDIA_PRIORITY if media in resources)
 
 
+class DocumentRetrievalError(RetrievalError):
+    """Fixed diagnostic vocabulary; never retains remote strings or URLs."""
+
+    def __init__(self, status: int | None = None, *, stage: str, code: str) -> None:
+        stages = {'METADATA', 'CONTENT', 'DOWNLOAD'}
+        codes = {'HTTP_STATUS', 'BODY_TOO_LARGE', 'TRANSPORT_TIMEOUT',
+                 'TRANSPORT_OS_ERROR', 'TRANSPORT_HTTP_ERROR',
+                 'REDIRECT_LOCATION_MISSING', 'REDIRECT_URL_INVALID',
+                 'REDIRECT_HOST_REJECTED', 'REDIRECT_COMPONENT_REJECTED'}
+        self.stage = stage if stage in stages else 'UNKNOWN'
+        self.code = code if code in codes else 'UNKNOWN'
+        super().__init__(status if type(status) is int and 100 <= status <= 599 else None)
+        self.safe_reason = (f'Document retrieval failed; stage={self.stage}; '
+                            f'code={self.code}; http={self.status if self.status is not None else "NONE"}')
+        self.args = (self.safe_reason,)
+
+
 class DocumentClient:
     """Fixed-host authenticated requests; one bounded unsigned object redirect.
 
@@ -62,6 +79,7 @@ class DocumentClient:
         self.timeout, self.max_bytes, self.attempts, self.pause = timeout, max_bytes, attempts, pause
 
     def _request(self, host: str, path: str, accept: str, authenticated: bool) -> tuple[Response, str | None]:
+        stage = "DOWNLOAD" if not authenticated else ("METADATA" if accept == "application/json" else "CONTENT")
         connection = HTTPSConnection(host, timeout=self.timeout)
         try:
             headers = {"Accept": accept, "Accept-Encoding": "identity"}
@@ -71,13 +89,17 @@ class DocumentClient:
             reply = connection.getresponse()
             body = reply.read(self.max_bytes + 1)
             if len(body) > self.max_bytes:
-                raise RetrievalError()
+                raise DocumentRetrievalError(reply.status, stage=stage, code="BODY_TOO_LARGE")
             # Never return a signed path as durable metadata.
             return Response("/document", body, reply.status, datetime.now(UTC),
                             reply.getheader("Content-Type", accept).split(";")[0].strip(),
                             reply.getheader("ETag"), reply.getheader("Retry-After")), reply.getheader("Location")
-        except (OSError, HTTPException):
-            raise RetrievalError() from None
+        except TimeoutError:
+            raise DocumentRetrievalError(stage=stage, code="TRANSPORT_TIMEOUT") from None
+        except OSError:
+            raise DocumentRetrievalError(stage=stage, code="TRANSPORT_OS_ERROR") from None
+        except HTTPException:
+            raise DocumentRetrievalError(stage=stage, code="TRANSPORT_HTTP_ERROR") from None
         finally:
             connection.close()
 
@@ -88,27 +110,42 @@ class DocumentClient:
             if media_type not in MEDIA_PRIORITY:
                 raise ValueError("Unsupported document representation")
             path += "/content"
+        last_error = None
+        stage = "METADATA" if media_type == "application/json" else "CONTENT"
         for attempt in range(self.attempts):
+            stage = "METADATA" if media_type == "application/json" else "CONTENT"
             try:
                 response, location = self._request(HOST, path, media_type, True)
                 if response.status == 302 and media_type != "application/json":
-                    parsed = urlsplit(location or "")
-                    if (parsed.scheme != "https" or parsed.hostname not in self.download_hosts
-                            or parsed.username or parsed.password or parsed.port or parsed.fragment):
-                        raise RetrievalError(302)
+                    if not location:
+                        raise DocumentRetrievalError(302, stage="CONTENT", code="REDIRECT_LOCATION_MISSING")
+                    try:
+                        parsed = urlsplit(location)
+                        port = parsed.port
+                    except ValueError:
+                        raise DocumentRetrievalError(302, stage="CONTENT", code="REDIRECT_URL_INVALID") from None
+                    if parsed.scheme != "https":
+                        raise DocumentRetrievalError(302, stage="CONTENT", code="REDIRECT_URL_INVALID")
+                    if parsed.hostname not in self.download_hosts:
+                        raise DocumentRetrievalError(302, stage="CONTENT", code="REDIRECT_HOST_REJECTED")
+                    if parsed.username or parsed.password or port or parsed.fragment:
+                        raise DocumentRetrievalError(302, stage="CONTENT", code="REDIRECT_COMPONENT_REJECTED")
                     target = parsed.path + ("?" + parsed.query if parsed.query else "")
                     response, _ = self._request(parsed.hostname, target, media_type, False)
+                    stage = "DOWNLOAD"
                 if response.status == 200:
                     return Response(path, response.body, response.status, response.retrieved_at,
                                     response.content_type, response.etag)
                 # Retry-After cannot be ignored: leave retry to a deliberate later run.
                 if response.retry_after or response.status not in (500, 502, 503, 504):
-                    raise RetrievalError(response.status)
+                    raise DocumentRetrievalError(response.status, stage=stage, code="HTTP_STATUS")
                 status = response.status
+                last_error = DocumentRetrievalError(status, stage=stage, code="HTTP_STATUS")
             except RetrievalError as error:
+                last_error = error
                 if error.status is not None:
                     raise
                 status = None
             if attempt + 1 < self.attempts:
                 self.pause(1)
-        raise RetrievalError(status)
+        raise last_error if last_error is not None else DocumentRetrievalError(status, stage=stage, code="HTTP_STATUS")

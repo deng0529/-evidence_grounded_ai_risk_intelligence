@@ -143,6 +143,7 @@ class ExplanationService:
         if context.risk_model_version != "1.2" or context.er_model_version != "1.2":
             raise IntegrityError("M7 explanation supports risk/ER model v1.2 only")
         year = _required(assessments.get_financial_reporting_year(assessment_id), "financial reporting year")
+        evidence_year = assessments.get_financial_evidence_year(assessment_id) or year
         config = model_aggregation_config(context.risk_model_version)
         leaves = self._leaves(context)
         repository = AggregationRepository(self.database)
@@ -173,8 +174,8 @@ class ExplanationService:
             nodes[code] = AggregationExplanation(result=result, children=edges)
         variables = tuple(VariableExplanation(
             name=VARIABLE_NAMES[code], domain=domain,
-            reporting_year=year if domain == "FINANCIAL" else None, leaf=leaves[code],
+            reporting_year=evidence_year if domain == "FINANCIAL" else None, leaf=leaves[code],
             inputs=tuple(self._input(reference, context) for reference in leaves[code].calculation.inputs),
         ) for domain, spec in config.items() for code in spec["variables"])
-        return AssessmentExplanation(assessment=context, reporting_year=year, overall=nodes["OVERALL"],
+        return AssessmentExplanation(assessment=context, reporting_year=year, evidence_reporting_year=evidence_year, overall=nodes["OVERALL"],
                                      domains=tuple(nodes[domain] for domain in config), variables=variables)

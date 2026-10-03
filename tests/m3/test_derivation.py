@@ -37,3 +37,37 @@ def test_complete_debt_sum_and_reject_missing_overlapping_or_mixed_components(ix
         mixed = (facts[0], facts[1].model_copy(update=update))
         with pytest.raises(ParseError):
             derive_debt(schedule, mixed, company_id='c', source_id='s', run_id='r', mapping_version='v1')
+
+
+def test_frc_balance_sheet_subtotals_derive_current_liabilities_and_total_assets(ixbrl: bytes) -> None:
+    from risk_intelligence.ingestion.accounts.derivation import derive_balance_sheet_subtotals
+    base = extract_ixbrl(ixbrl, 'document', 'ZZ000003').facts[0]
+    ns = '{http://xbrl.frc.org.uk/fr/2025-01-01/core}'
+    def source(identity: str, local: str, value: str) -> SourceFinancialFact:
+        return SourceFinancialFact(**(base.model_dump() | {
+            'source_fact_id': identity, 'evidence_id': 'e-' + identity,
+            'source_concept': ns + local, 'value': Decimal(value), 'dimensions': (),
+        }))
+    facts = (source('ca','CurrentAssets','8218053'),
+             source('nca','NetCurrentAssetsLiabilities','6390856'),
+             source('talcl','TotalAssetsLessCurrentLiabilities','6575329'))
+    derived = derive_balance_sheet_subtotals(facts, company_id='c', source_id='s', run_id='r', mapping_version='v2')
+    by_concept = {fact.canonical_concept: (fact, ids, rule) for fact, ids, rule in derived}
+    assert by_concept['CURRENT_LIABILITIES'][0].value_numeric == Decimal('1827197')
+    assert by_concept['CURRENT_LIABILITIES'][1] == ('ca','nca')
+    assert by_concept['TOTAL_ASSETS'][0].value_numeric == Decimal('8402526')
+    assert by_concept['TOTAL_ASSETS'][1] == ('talcl','ca','nca')
+    assert all(item[0].extraction_method.value == 'DERIVED' for item in derived)
+
+
+def test_balance_sheet_subtotals_fail_closed_for_unreviewed_namespace_or_dimensions(ixbrl: bytes) -> None:
+    from risk_intelligence.ingestion.accounts.derivation import derive_balance_sheet_subtotals
+    base = extract_ixbrl(ixbrl, 'document', 'ZZ000003').facts[0]
+    ns = '{http://xbrl.frc.org.uk/fr/2025-01-01/core}'
+    ca = SourceFinancialFact(**(base.model_dump() | {'source_fact_id':'ca','evidence_id':'e-ca',
+        'source_concept':ns+'CurrentAssets','value':Decimal('10'),'dimensions':()}))
+    nca = SourceFinancialFact(**(base.model_dump() | {'source_fact_id':'nca','evidence_id':'e-nca',
+        'source_concept':'{urn:unreviewed}NetCurrentAssetsLiabilities','value':Decimal('4'),'dimensions':()}))
+    assert derive_balance_sheet_subtotals((ca,nca), company_id='c', source_id='s', run_id='r', mapping_version='v2') == ()
+    nca = nca.model_copy(update={'source_concept':ns+'NetCurrentAssetsLiabilities', 'dimensions':(('x','y'),)})
+    assert derive_balance_sheet_subtotals((ca,nca), company_id='c', source_id='s', run_id='r', mapping_version='v2') == ()

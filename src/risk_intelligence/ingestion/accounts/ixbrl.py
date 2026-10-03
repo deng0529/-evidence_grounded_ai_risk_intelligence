@@ -12,15 +12,19 @@ from risk_intelligence.domain.facts import ReportingPeriod
 from risk_intelligence.ingestion.companies_house.client import ParseError
 from .models import ExtractionResult, SourceFinancialFact
 
-PARSER_VERSION = "ixbrl-monetary-v1"
+PARSER_VERSION = "ixbrl-monetary-v2"
 INSTANCE = "http://www.xbrl.org/2003/instance"
 INLINE = {"http://www.xbrl.org/2013/inlineXBRL", "http://www.xbrl.org/2008/inlineXBRL"}
 ISO = "http://www.xbrl.org/2003/iso4217"
 TRANSFORMS = {
     "{http://www.xbrl.org/inlineXBRL/transformation/2010-04-20}numcommadot",
     "{http://www.xbrl.org/inlineXBRL/transformation/2011-07-31}numcommadot",
+    "{http://www.xbrl.org/inlineXBRL/transformation/2011-07-31}numdotdecimal",
     "{http://www.xbrl.org/inlineXBRL/transformation/2015-02-26}numdotdecimal",
     "{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}num-dot-decimal",
+}
+ZERO_DASH_TRANSFORMS = {
+    "{http://www.xbrl.org/inlineXBRL/transformation/2011-07-31}zerodash",
 }
 
 
@@ -94,13 +98,18 @@ def _period(context: ET.Element) -> ReportingPeriod:
 def _number(raw: str, scale: int, sign: str, transform: str | None) -> Decimal:
     if not -18 <= scale <= 18 or sign not in ("+", "-"):
         raise ParseError("Unsupported sign or scale")
-    if transform is not None and transform not in TRANSFORMS:
+    if transform is not None and transform not in TRANSFORMS | ZERO_DASH_TRANSFORMS:
         raise ParseError("Unsupported numeric transformation")
     token = raw.strip()
-    pattern = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?" if transform else r"[+-]?[0-9]+(?:\.[0-9]+)?"
-    if not re.fullmatch(pattern, token) or len(token) > 100:
-        raise ParseError("Unsupported monetary lexical value")
-    value = Decimal(token.replace(",", ""))
+    if transform in ZERO_DASH_TRANSFORMS:
+        if token != "-":
+            raise ParseError("Unsupported zero-dash lexical value")
+        value = Decimal(0)
+    else:
+        pattern = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?" if transform else r"[+-]?[0-9]+(?:\.[0-9]+)?"
+        if not re.fullmatch(pattern, token) or len(token) > 100:
+            raise ParseError("Unsupported monetary lexical value")
+        value = Decimal(token.replace(",", ""))
     # Manipulate the Decimal tuple so ambient context cannot round exact source digits.
     negative, digits, exponent = value.as_tuple()
     if sign == "-":

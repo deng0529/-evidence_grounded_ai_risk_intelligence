@@ -74,6 +74,7 @@ class AssessmentExplanation(Contract):
 
     assessment: Assessment
     reporting_year: int
+    evidence_reporting_year: int
     overall: AggregationExplanation
     domains: tuple[AggregationExplanation, ...]
     variables: tuple[VariableExplanation, ...]
