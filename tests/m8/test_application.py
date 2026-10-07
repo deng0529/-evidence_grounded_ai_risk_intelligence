@@ -16,7 +16,7 @@ from tests.m5.test_company_runner import services
 from tests.m5.test_obligations import prepare
 from tests.m6.test_service import context
 
-ENTRY = Path(__file__).resolve().parents[2] / 'streamlit_app.py'
+ENTRY = Path(__file__).resolve().parents[2] / 'maintenance_app.py'
 
 
 def test_exact_view_hierarchy_beliefs_reliability_year_and_trace(database, assessed):

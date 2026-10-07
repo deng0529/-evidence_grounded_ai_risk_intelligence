@@ -112,3 +112,14 @@ def test_psc_complete_empty_zero_explicit_exit_and_ambiguous_notification():
 
 def test_calendar_months_clamp_leap_boundary():
     assert months_before(date(2024, 2, 29), 24) == date(2022, 2, 28)
+
+
+def test_active_tenure_excludes_retired_director_with_legacy_unknown_start_date():
+    active = director('active', appointed='2021-09-30')
+    retired = director('retired', appointed=None, appointed_before='1992-01-01', resigned='2000-01-01')
+    expected = calculate_population('G2.2', members((active,)), assessment_date=ASSESSMENT)
+    actual = calculate_population('G2.2', members((active, retired)), assessment_date=ASSESSMENT)
+    assert actual.value == expected.value and actual.value is not None
+    assert actual.inputs[0].reliability_r == expected.inputs[0].reliability_r
+    # History-dependent variables must still require that retired start date.
+    assert calculate_population('G2.1', members((active, retired)), assessment_date=ASSESSMENT).reasons == (Reason.MISSING_APPOINTMENT,)

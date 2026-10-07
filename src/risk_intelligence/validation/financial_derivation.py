@@ -8,7 +8,7 @@ from risk_intelligence.domain.enums import (
     AdmissibilityReason, AvailabilityStatus, EvidenceUse, ExtractionMethod,
     ValidationRole, ValidationStatus, ValidationStrength,
 )
-from risk_intelligence.domain.facts import CodesValue, TextValue
+from risk_intelligence.domain.facts import CodesValue, TextValue, FinancialFact
 from risk_intelligence.domain.validation import AnalyticalInput, RuleDefinition, RuleOutcome, ValidationField
 from risk_intelligence.ingestion.accounts.models import CompletenessProof, SourceFinancialFact
 from risk_intelligence.persistence.accounts_repository import AccountsRepository
@@ -81,12 +81,11 @@ def load_derivation_evidence(
     if origin == "DIRECT":
         if proof is not None:
             raise IntegrityError("Direct financial observation cannot have derivation proof")
-    elif origin == "DERIVED":
-        if proof is None:
-            raise IntegrityError("Derived financial observation has no completeness proof")
-    else:
+    elif origin != "DERIVED":
         raise IntegrityError("Unsupported financial observation lineage origin")
 
+    # Missing proof is an admissibility outcome owned by FinancialCompletenessRule,
+    # not corrupt SQL lineage. Preserve it so other company variables still run.
     return FinancialDerivationEvidence(
         canonical_fact_id=canonical_fact_id,
         origin=origin,
@@ -131,6 +130,24 @@ def _sum(values: tuple[Decimal, ...]) -> Decimal:
         return sum(values, Decimal(0))
 
 
+def reviewed_subtotal_value(lineage: FinancialDerivationEvidence, fact: FinancialFact) -> Decimal | None:
+    """Reproduce only the existing M3 subtotal identities with exact source lineage."""
+    from risk_intelligence.ingestion.accounts.derivation import (
+        BALANCE_SHEET_DERIVATION_VERSION, derive_balance_sheet_subtotals,
+    )
+    if lineage.derivation_version != BALANCE_SHEET_DERIVATION_VERSION:
+        return None
+    for candidate, ids, rule in derive_balance_sheet_subtotals(lineage.components,
+            company_id=fact.company_id, source_id=fact.source_id,
+            run_id=fact.processing_run_id, mapping_version=lineage.mapping_version):
+        if (candidate.canonical_concept == fact.canonical_concept
+                and ids == tuple(c.source_fact_id for c in lineage.components)
+                and rule == lineage.derivation_rule
+                and candidate.evidence_ids == fact.evidence_ids):
+            return candidate.value_numeric
+    return None
+
+
 class FinancialDerivationIntegrityRule:
     """Reproduce admitted M3 additive derivations from immutable SQL lineage."""
 
@@ -138,7 +155,7 @@ class FinancialDerivationIntegrityRule:
     def definition(self) -> RuleDefinition:
         return RuleDefinition(
             rule_id="financial.derivation_integrity",
-            rule_version="v1",
+            rule_version="v2",
             applies_to=("FINANCIAL_FACT",),
             required_inputs=("financial_provenance", "financial_derivation_evidence"),
             role=ValidationRole.HARD_FAIL,
@@ -225,7 +242,9 @@ class FinancialDerivationIntegrityRule:
                 details, AdmissibilityReason.REQUIRED_COMPLETENESS_FAILURE,
             )
 
-        reproduced = _sum(tuple(values))
+        reproduced = reviewed_subtotal_value(lineage, fact)
+        if reproduced is None:
+            reproduced = _sum(tuple(values))
         details += (
             ValidationField(name="reproduced_value", value=TextValue(value=str(reproduced))),
             ValidationField(name="stored_value", value=TextValue(value=str(fact.value_numeric))),
@@ -259,7 +278,7 @@ class FinancialCompletenessRule:
     def definition(self) -> RuleDefinition:
         return RuleDefinition(
             rule_id="financial.completeness",
-            rule_version="v1",
+            rule_version="v2",
             applies_to=("FINANCIAL_FACT",),
             required_inputs=("financial_provenance", "financial_derivation_evidence"),
             role=ValidationRole.HARD_FAIL,
@@ -277,6 +296,12 @@ class FinancialCompletenessRule:
                 self.definition, context, ValidationStatus.NOT_APPLICABLE,
                 "This observation does not require a derivation completeness proof", details,
             )
+        # Explicit reported subtotal identities are not an exhaustive sum of rows.
+        # They need exact formula/source reproduction, not a fabricated row proof.
+        subtotal = reviewed_subtotal_value(lineage, fact)
+        if subtotal is not None and subtotal == fact.value_numeric:
+            return _outcome(self.definition, context, ValidationStatus.PASS,
+                "Reviewed reported balance-sheet subtotal identity reproduces exactly", details)
         proof = lineage.proof
         if proof is None:
             return _outcome(

@@ -85,7 +85,7 @@ def _check_ingestion(database: Database, number: str, day: date, m2_id: str, m3_
             raise IntegrityError("Ingestion run has not reached a terminal state")
 
 
-def _validate_financial(database: Database, m3_id: str, day: date, scope: Literal["COMPANY", "GROUP"]) -> list[StageIssue]:
+def _validate_financial(database: Database, m3_id: str, day: date, scope: Literal["COMPANY", "GROUP"]) -> tuple[str, ...]:
     repository = AccountsRepository(database)
     ids = [str(row["fact_id"]) for row in database.query(
         "SELECT fact_id FROM accounts_run_fact WHERE processing_run_id=? ORDER BY fact_id", (m3_id,))]
@@ -93,19 +93,21 @@ def _validate_financial(database: Database, m3_id: str, day: date, scope: Litera
     if any(fact is None for fact in facts):
         raise IntegrityError("M3 run references a missing canonical observation")
     service = FinancialValidationService(database)
-    issues = []
+    validated_ids = []
     for fact in facts:
         # Same-concept observations are passed to the existing conflict classifier;
         # the runner never chooses a winner or suppresses a disagreeing value.
         competitors = tuple(other.financial_fact_id for other in facts
                             if other.canonical_concept == fact.canonical_concept
                             and other.financial_fact_id != fact.financial_fact_id)
+        identity = _identity("financial-subtotal-validation-v3", fact.financial_fact_id, day.isoformat(), scope)
+        validated_ids.append(identity)
         service.evaluate_and_persist(
-            validated_fact_id=_identity("financial", fact.financial_fact_id, day.isoformat(), scope),
+            validated_fact_id=identity,
             fact_id=fact.financial_fact_id, assessment_date=day, analytical_scope=scope,
             competing_fact_ids=competitors,
         )
-    return issues
+    return tuple(validated_ids)
 
 
 def run_company_assessment(database: Database, *, number: str, assessment_date: date, reporting_year: int,
@@ -159,7 +161,8 @@ def run_company_assessment(database: Database, *, number: str, assessment_date: 
         started_at=calculated_at, status=ProcessingStatus.RUNNING, current_stage="M4_TO_M5_GOLDEN",
         trigger_type=TriggerType.DEMO_PRECOMPUTE, app_version="company-golden-v1")
     runs.save_processing_run(run)
-    issues = _validate_financial(database, m3_id, assessment_date, scope)
+    financial_ids = _validate_financial(database, m3_id, assessment_date, scope)
+    issues = []
     governance = GovernanceValidationService(database)
     set_ids = {}
     for kind, months, resources in (
@@ -187,7 +190,7 @@ def run_company_assessment(database: Database, *, number: str, assessment_date: 
         reliability_model_version=POLICY_VERSION, er_model_version=RISK_MODEL_VERSION, data_dictionary_version="1"))
     runs.save_financial_reporting_year(assessment_id, reporting_year)
     runs.save_financial_evidence_year(assessment_id, evidence_reporting_year)
-    RiskVariableService(database).calculate_and_persist(assessment_id=assessment_id, scope=scope, calculated_at=calculated_at)
+    RiskVariableService(database).calculate_and_persist(assessment_id=assessment_id, scope=scope, calculated_at=calculated_at, financial_validated_ids=financial_ids)
     leaves = persisted_leaves(database, assessment_id)
     if database.query("PRAGMA foreign_key_check"):
         raise IntegrityError("Assessment database has foreign-key violations")

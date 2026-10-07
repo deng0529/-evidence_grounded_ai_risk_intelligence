@@ -1,93 +1,81 @@
-# Evidence-Grounded AI Risk Intelligence
+# Evidence-Grounded Company Risk MVP
 
-An AI-assisted risk intelligence prototype that combines automated document ingestion, structured data extraction, evidence validation, data provenance, and explainable risk assessment.
+An evidence-grounded company risk assessment MVP using Companies House evidence,
+AI-assisted financial extraction and hierarchical Evidential Reasoning (ER).
+The current model has three Governance variables and three Financial variables.
 
-## Core idea
+## Application entry points
 
-**Source → Evidence → Structured Fact → Validation → Risk → Explanation**
+- `streamlit_app.py`: standalone public risk explorer. Overview, Domain analysis,
+  Variables & standards and How it works. No sidebar maintenance navigation.
+- `maintenance_app.py`: local data foundation, belief and ER test workflows.
+- `prepare_dashboard.py`: prepare published display snapshots from existing
+  structured company evidence; no new extraction or OpenAI calls.
 
-## Current accepted stage
+All entry points share the same services and calculation code.
 
-Foundation v33 was accepted and frozen on 3 October 2026 after five-company testing and latest-only Turso/R2 cleanup. The default Data Foundation workflow reuses saved results without repeating ingestion or OpenAI extraction. See [the freeze record](docs/implementation/FOUNDATION_FREEZE_20261003.md) and [current handoff](CURRENT_HANDOFF.md). The next belief/ER phase remains pending.
+## Run locally
 
-## Historical milestone status
-
-M4–M7 provide validated evidence, six-variable model v1.2 leaf beliefs, hierarchical ER aggregation and deterministic traceability. M8.1 refines the Streamlit application for user-facing explanation while preserving M4–M7 semantics. See [M8 application notes](docs/implementation/M8-application-streamlit.md) for configuration, supported workflows and limitations. Deployment is deferred to M9.
-
-Run the UI from the repository root after installing the project and configuring an existing migrated database:
-
-```powershell
-.venv\Scripts\python.exe -m streamlit run streamlit_app.py
-```
-
-## Local development (Python 3.12)
-
-Use the existing project-local `.venv`. For a fresh checkout, create it with
-`py -V:3.12 -m venv .venv`. From the repository root in PowerShell:
+Use Python 3.12 and install the project with `python -m pip install -e .`.
+Configure the existing local `.env` with the database credentials. Secrets are
+never committed. Prepare published results once with:
 
 ```powershell
-.venv\Scripts\python.exe --version
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.venv\Scripts\python.exe -m pytest
-.venv\Scripts\python.exe examples\inspect_contracts.py
-.venv\Scripts\python.exe examples\inspect_storage.py
+& ".\.venv\Scripts\python.exe" ".\prepare_dashboard.py"
 ```
 
-The example prints clearly labelled synthetic records constructed with the actual
-models. The storage example uses a temporary SQLite database and local raw files,
-checks exact Decimal/NULL/byte round trips and provenance, then removes its temporary
-directory. Neither example retrieves data or calculates risk. Normal tests are
-offline and need no credentials or external services.
-
-`risk_intelligence.config.load_settings()` reads environment variables explicitly;
-it does not load `.env` files, create directories or connect to services.
-`.env.example` lists safe placeholders. Local SQLite/filesystem defaults require
-no credentials. Turso/libSQL and R2 require explicit configuration; production
-rejects local backends. Secrets are excluded from representations and serialization.
-
-Run migrations explicitly after configuring the desired backend:
+Start the public explorer:
 
 ```powershell
-.venv\Scripts\python.exe -m risk_intelligence.persistence.migrations
+& ".\.venv\Scripts\python.exe" -m streamlit run ".\streamlit_app.py"
 ```
 
-With local defaults this creates `data/metadata.sqlite3`; it does not contact
-Turso or R2. Imports never create a database or run migrations. Read the
-[M1 storage notes](docs/implementation/m1-storage-notes.md) before cloud configuration.
+Local maintenance runs separately with `python -m streamlit run maintenance_app.py`.
 
-See [M0 contract review notes](docs/implementation/m0-contracts.md) for record
-invariants, serialization, interfaces and decisions requiring human review.
+## Data and assessment flow
 
-## Planned stack
+Companies House API and account documents → Cloudflare R2 original evidence →
+structured extraction → Turso facts and source references → six reference beliefs →
+Governance / Financial ER → Overall ER → Turso published snapshot → Streamlit UI.
 
-- Python
-- Companies House public data/API
-- Official company websites
-- Turso for structured relational data
-- Cloudflare R2 for immutable raw evidence/object storage
-- Local filesystem raw-evidence adapter behind storage interfaces for development
-- Streamlit Community Cloud for the Python application and UI
-- FastAPI deferred from the MVP
-- OpenAI API for selected AI tasks
-- pytest
-- Git/GitHub
+Numeric risk transformations and ER are deterministic. AI supports extraction;
+it does not assign or overwrite risk results. Missing usable data stays explicit.
+Dashboard viewing reads published results without ingestion, calculations,
+migrations or database writes. Maintenance preparation upserts one current
+snapshot per company. Configuration/source changes require a deliberate refresh.
 
-## Repository documentation
+## YAML configuration
 
-- `PROJECT_SPEC.md` — product requirements and MVP scope
-- `ARCHITECTURE.md` — system architecture
-- `AGENTS.md` — Codex development instructions
-- `docs/` — detailed design documents
+- `src/risk_intelligence/risk_variables/config/risk_model.yaml`: active variables,
+  reference levels, units, domains, model versions and ER weights.
+- `src/risk_intelligence/services/config/dashboard.yaml`: title, description,
+  variable names, formulas, reference explanations and standard version.
+- `src/risk_intelligence/services/config/models.yaml`: extraction/explanation
+  models, configuration version and verified download hosts.
 
-## Important limitation
+`services/dashboard_config.py` provides the combined configuration entry point.
+New calculation types still require tested Python implementations and input
+mappings. YAML alone does not implement a new extraction or calculation method.
+Changing references requires a new standard version to preserve historical
+standards; published snapshots must be refreshed after configuration changes.
 
-This is a research/prototype system. It is not a regulated credit rating, investment recommendation, legal opinion, or compliance determination.
+## Hosting
 
-### Current M8.1 handoff
+Streamlit Community Cloud is the deployment target. Use `streamlit_app.py`,
+Python 3.12, `requirements.txt`, and server-side Secrets based on
+`.streamlit/secrets.example.toml`. The public explorer only needs Turso access;
+R2, OpenAI and Companies House credentials are not required for viewing.
+See `docs/implementation/STANDALONE_MVP_V48.md` for the release workflow.
 
-See [CURRENT_HANDOFF](docs/implementation/CURRENT_HANDOFF.md) for current six-variable
-v1.2 status, changes, validation limitations and the next diagnostic step.
-Model names and exact document download hosts now live in
-`src/risk_intelligence/services/config/models.yaml`; credentials remain in the
-existing secure environment configuration. `OPENAI_EXTRACTION_MODEL` is retained
-as a historical Settings field but the application runtime uses YAML.
+## Scope and limitations
+
+Current pilot: five retained companies; Governance and Financial only. Reference
+benchmarks and weights are approved MVP settings, not empirically calibrated
+failure probabilities. Reliability discounting is deferred. Current/Quick Ratios
+share inputs; their dependence remains a future validation consideration.
+
+`CURRENT_HANDOFF.md` is the current project handoff. V49 UI was accepted on 7 October 2026 and GitHub publication was authorized.
+Public deployment follows the GitHub review. Unit tests use synthetic data; live acceptance
+requires the configured database and the five-company review.
+
+Accepted release and hosting instructions: [V49 release](docs/implementation/RELEASE_V49_20261007.md).

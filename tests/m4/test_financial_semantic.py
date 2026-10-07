@@ -60,7 +60,7 @@ def semantic_llm(provenance, source):
 def test_supported_existing_normalization_passes_without_strength(request, fixture) -> None:
     provenance, source, semantic = request.getfixturevalue(fixture)
     report, outcome = validate(provenance, source, semantic)
-    assert report.admissible and outcome.result.value == 'PASS' and outcome.rule_version == 'v1'
+    assert report.admissible and outcome.result.value == 'PASS' and outcome.rule_version == 'v2'
     assert outcome.evidence_ids == ('e1', 'e2') and outcome.reason
     details = {d.name: d.value.value for d in outcome.structured_details}
     assert details['source_label'] == source.source_label
