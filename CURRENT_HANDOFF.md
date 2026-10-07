@@ -1,3 +1,19 @@
+# GitHub publication status — 7 October 2026
+
+V49 is published on feature/unified-risk-mvp. Pull request #1 is open:
+https://github.com/deng0529/-evidence_grounded_ai_risk_intelligence/pull/1
+
+main remains the Foundation v33 release until the user reviews GitHub and
+explicitly approves merging PR #1. Automatic approval review rejected immediate
+merge because default-branch modification before that review was not clearly
+authorized. No merge or cloud deployment was performed.
+
+For the eventual deployment use main after approved merge, or explicitly choose
+feature/unified-risk-mvp if deploying before merge. Do not deploy current main
+expecting the V49 standalone UI. Historical foundation-v33-20261003 is preserved.
+
+---
+
 # Company Risk MVP — accepted V49 release, 7 October 2026
 
 The user accepted V49 and explicitly authorized GitHub publication on
