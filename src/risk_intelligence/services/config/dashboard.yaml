@@ -1,0 +1,57 @@
+version: risk-dashboard-v48
+reference_standard_version: six-variable-reference-v1
+title: Evidence-Grounded Company Risk MVP
+intro: Explore evidence-grounded company risk assessments using Companies House data,
+  AI-assisted extraction and Evidential Reasoning.
+variables:
+  G1.1:
+    name: Accounts Filing Lateness
+    formula: 'Calculated: max(0, reference date − due date); use filed date, or saved
+      assessment date if not filed.'
+    reference_explanation: No delay (0 days) gives full Low. 90 days is the approved
+      MVP substantial-delay benchmark and gives full High. Intermediate delays are
+      interpolated.
+    value_rule: max(0, filed date - due date), or max(0, saved assessment date - due
+      date) for an outstanding obligation; days.
+  G1.2:
+    name: Confirmation Statement Lateness
+    formula: 'Calculated: max(0, reference date − due date); use filed date, or saved
+      assessment date if not filed.'
+    reference_explanation: No delay (0 days) gives full Low. 30 days is the approved
+      MVP delay benchmark and gives full High. Intermediate delays are interpolated.
+    value_rule: max(0, filed date - due date), or max(0, saved assessment date - due
+      date) for an outstanding obligation; days.
+  G2.2:
+    name: Median Tenure of Active Directors
+    formula: 'Calculated: median(active-director tenure in years at saved assessment
+      date).'
+    reference_explanation: 5 years represents the approved MVP established-tenure
+      benchmark; 1 year represents short tenure. Longer tenure gives more Low support;
+      shorter tenure gives more High support. Tenure alone does not establish governance
+      quality.
+    value_rule: Median of (saved assessment date - appointment date) / 365.2425 for
+      the validated active director population.
+  F1.1:
+    name: Equity Ratio
+    formula: 'Calculated: net assets / total assets.'
+    reference_explanation: '0.10 represents the approved MVP equity-buffer benchmark:
+      net assets equal one tenth of total assets. 0 represents no net-assets buffer.
+      A larger buffer gives more Low support; a smaller or negative buffer gives more
+      High support.'
+    value_rule: NET_ASSETS / TOTAL_ASSETS; total assets must be positive.
+  F2.2:
+    name: Current Ratio
+    formula: 'Calculated: current assets / current liabilities.'
+    reference_explanation: 1.50 represents the approved MVP current-asset coverage
+      buffer; 1.10 represents limited headroom above current liabilities. Greater
+      coverage gives more Low support; lower coverage gives more High support.
+    value_rule: CURRENT_ASSETS / CURRENT_LIABILITIES; current liabilities must be
+      positive.
+  F2.3:
+    name: Quick Ratio
+    formula: 'Calculated: (current assets − inventory) / current liabilities.'
+    reference_explanation: 1.00 represents coverage of current liabilities after excluding
+      inventory; 0.70 represents the approved MVP weak-coverage benchmark. Greater
+      coverage gives more Low support; lower coverage gives more High support.
+    value_rule: (CURRENT_ASSETS - INVENTORY) / CURRENT_LIABILITIES; current liabilities
+      must be positive. Missing inventory is not zero.

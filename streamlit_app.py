@@ -21,7 +21,7 @@ def _load_local_env(path: Path = Path('.env')) -> None:
 
 
 _load_local_env()
-from risk_intelligence.ui.streamlit_app import main
+from risk_intelligence.ui.public_app import main
 
 if __name__ == '__main__':
     main()

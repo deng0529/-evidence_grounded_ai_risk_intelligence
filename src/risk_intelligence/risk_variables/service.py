@@ -22,7 +22,7 @@ class RiskVariableService:
         self.database = database
 
     def calculate_and_persist(self, *, assessment_id: str, scope: Literal["COMPANY", "GROUP"],
-                              calculated_at: datetime) -> tuple[LeafAssessment, ...]:
+                              calculated_at: datetime, financial_validated_ids: tuple[str, ...] | None = None) -> tuple[LeafAssessment, ...]:
         """Atomically publish every active model leaf; failure cannot leave a partial handoff."""
         with self.database.transaction():
             context = SqlAssessmentRepository(self.database).get_assessment(assessment_id)
@@ -41,8 +41,15 @@ class RiskVariableService:
                 evidence_reporting_year = reporting_year
             parameters = (context.company_id, context.assessment_date.isoformat())
             repository = ValidatedEvidenceRepository(self.database)
-            facts = tuple(repository.get_fact(str(row["validated_fact_id"])) for row in self.database.query(
-                "SELECT validated_fact_id FROM validated_fact WHERE company_id=? AND assessment_date<=? ORDER BY validated_fact_id", parameters))
+            if financial_validated_ids is not None:
+                # An explicit source-run handoff must not mix historical validation versions.
+                facts = tuple(repository.get_fact(identity) for identity in financial_validated_ids)
+                if any(fact is None or fact.company_id != context.company_id
+                       or fact.assessment_date > context.assessment_date for fact in facts):
+                    raise IntegrityError("Selected financial validation handoff is missing or incompatible")
+            else:
+                facts = tuple(repository.get_fact(str(row["validated_fact_id"])) for row in self.database.query(
+                    "SELECT validated_fact_id FROM validated_fact WHERE company_id=? AND assessment_date<=? ORDER BY validated_fact_id", parameters))
             sets = tuple(load_validated_members(self.database, str(row["validated_evidence_set_id"])) for row in self.database.query(
                 "SELECT validated_evidence_set_id FROM validated_evidence_set WHERE company_id=? AND assessment_date=? ORDER BY validated_evidence_set_id", parameters))
             obligations = tuple(ObligationValidationService(self.database).get(str(row["validated_obligation_id"])) for row in self.database.query(

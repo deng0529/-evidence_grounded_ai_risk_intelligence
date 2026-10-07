@@ -2,11 +2,19 @@
 from datetime import UTC, date, datetime
 from hashlib import sha256
 import os
+import json
+from decimal import Decimal
 from uuid import uuid4
 import streamlit as st
 
 from risk_intelligence.ingestion.accounts.coverage import read_coverage, coverage_text, coverage_rows
 from risk_intelligence.config import load_settings
+from risk_intelligence.services.leaf_belief_test import (
+    saved_companies,
+)
+from risk_intelligence.services.reference_presentation import summary_rows, standards_rows, calculation_explanation
+from risk_intelligence.services.saved_reference_beliefs import calculate_saved_reference_beliefs
+from risk_intelligence.services.reference_er import (calculate_saved_reference_er, node_rows, child_rows, chart_rows, node_explanation)
 from risk_intelligence.explanation import InputExplanation
 from risk_intelligence.services.application import AssessmentApplication, AssessmentView, display_value, error_message
 from risk_intelligence.services.application_runtime import application_database, ingestion_services
@@ -527,22 +535,146 @@ def render_assessment(view: AssessmentView) -> None:
             st.write('M4 validates evidence and records reliability. M5 calculates the six indicator beliefs. M6 performs hierarchical ER aggregation. M7 resolves the persisted traceability tree shown by this interface.')
 
 
+def _leaf_belief_test(environ: dict[str, str]) -> None:
+    """Explicit SQL-only test button; rerenders replay stored results without ER."""
+    st.subheader('Six-variable belief test')
+    st.caption('Read saved company values and apply the approved six-variable reference standards.')
+    with application_database(environ) as database:
+        companies = saved_companies(database)
+    if not companies:
+        st.info('No saved Foundation companies are available. This workflow never starts ingestion.')
+        st.session_state.pop('leaf_test_view', None)
+        return
+    names = dict(companies)
+    number = st.selectbox('Saved company', tuple(names),
+        format_func=lambda n: f'{names[n]} — {n}', key='leaf_test_company',
+        index=None, placeholder='Select a saved company to view its beliefs')
+    if number is None:
+        st.session_state.pop('leaf_test_view', None)
+        st.session_state.leaf_test_selection = None
+        return
+    if st.session_state.get('leaf_test_selection') != number:
+        st.session_state.pop('leaf_test_view', None)
+        st.session_state.leaf_test_selection = number
+    if st.session_state.get('leaf_test_view') is None:
+        st.session_state.pop('leaf_test_view', None)
+        with st.spinner('Reading saved values and applying reference standards…'):
+            with application_database(environ, write=True) as database:
+                view = calculate_saved_reference_beliefs(database, number)
+                st.session_state.leaf_test_view = view
+    view = st.session_state.get('leaf_test_view')
+    if view is None:
+        return
+    st.success('Saved reference beliefs loaded.' if view.reused else 'Six reference beliefs calculated and saved.')
+    st.caption(f'{view.company_name} · {number} · Saved assessment date: {view.assessment_date} · '
+               f'Requested year: {view.foundation.requested_year} · Evidence year: {view.foundation.evidence_year}')
+    st.subheader('Six-variable risk beliefs')
+    st.dataframe(summary_rows(view), hide_index=True, width='stretch')
+    st.caption('Unknown means the saved data does not provide a usable value for this variable. The reason is listed per row; '
+               'a failed extraction does not prove the company did not disclose the information.')
+    st.subheader('Risk reference standards')
+    st.caption('These are the approved initial MVP reference levels, not universal industry cut-offs or thresholds prescribed by ER. '
+               'ER-style linear transformation uses the reference levels; it does not determine their numerical values.')
+    st.dataframe(standards_rows(view), hide_index=True, width='stretch')
+    st.subheader('Calculation method and explanations')
+    st.code('High = clip((value − Low reference) / (High reference − Low reference), 0.00, 1.00)\n'
+            'Low = 1.00 − High; Unknown = 0.00 when the value is available\n'
+            'No usable value: High = 0.00; Low = 0.00; Unknown = 1.00', language=None)
+    st.write('clip limits the result to the interval 0.00–1.00. Values on or beyond the Low-risk side receive full Low support; '
+             'values on or beyond the High-risk side receive full High support. Values between the two references are linearly interpolated. '
+             'The same formula works when a higher value means less risk, such as director tenure and the financial ratios.')
+    for belief in view.beliefs:
+        st.write(calculation_explanation(view, belief))
+    st.caption('Beliefs are decimal shares, not percentages or probabilities of company failure. Displays use two decimal places; '
+               'calculations retain full precision. Rounded shares may not sum exactly to 1.00.')
+
+
+
+def _er_aggregation_test(environ: dict[str, str]) -> None:
+    """SQL-only ER test over V44 reference memberships, with hierarchical drill-down."""
+    import altair as alt
+    st.subheader('ER aggregation test')
+    with application_database(environ) as database:
+        choices = saved_companies(database)
+    if not choices:
+        st.info('No saved company values are available.')
+        return
+    names = dict(choices)
+    number = st.selectbox('Saved company', tuple(names), format_func=lambda n: f'{names[n]} — {n}',
+                          index=None, placeholder='Select a saved company to view its ER risk', key='er_company')
+    if number is None:
+        st.session_state.pop('er_view', None)
+        st.session_state.er_selection = None
+        return
+    if st.session_state.get('er_selection') != number:
+        st.session_state.pop('er_view', None)
+        st.session_state.er_selection = number
+    if st.session_state.get('er_view') is None:
+        with st.spinner('Combining saved variable beliefs using ER…'):
+            with application_database(environ, write=True) as database:
+                st.session_state.er_view = calculate_saved_reference_er(database, number)
+    view = st.session_state.er_view
+    reference = view.reference
+    st.caption(f'{reference.company_name} · {number} · Saved assessment date: {reference.assessment_date} · Evidence year: {reference.foundation.evidence_year}')
+    st.subheader('Overall company risk')
+    st.caption('Company risk assessed only from Governance and Financial. Belief shares are not probabilities of company failure.')
+    data = alt.InlineData(values=chart_rows(view))
+    chart = alt.Chart(data).mark_arc().encode(
+        theta=alt.Theta('Start:Q', scale=None, stack=None),
+        theta2=alt.Theta2('End:Q'),
+        color=alt.Color('Risk:N', scale=alt.Scale(domain=['High risk', 'Low risk', 'Unknown'], range=['#d9534f', '#2f9e69', '#9ca3af']),
+                        sort=['High risk', 'Low risk', 'Unknown']),
+        tooltip=['Risk:N', 'Percentage:N'])
+    labels = alt.Chart(data).transform_filter('datum.Share > 0').mark_text(radius=105, color='white', fontSize=16).encode(
+        theta=alt.Theta('Middle:Q', scale=None, stack=None), text='Percentage:N')
+    st.altair_chart((chart + labels).properties(height=320), width='stretch')
+    st.subheader('Governance and Financial risk')
+    st.caption('Domain tables use decimal belief shares from 0.00 to 1.00; the pie chart displays the same overall shares as percentages.')
+    st.dataframe(node_rows(view.domains), hide_index=True, width='stretch')
+    st.subheader('How ER produces this result')
+    st.write('Three Governance variable beliefs are combined into Governance risk, and three Financial variable beliefs into Financial risk. '
+             'The two domain beliefs are then combined into overall company risk. Each step uses Yang/Xu evidential reasoning (ER), '
+             'a nonlinear combination of weighted belief support, not an arithmetic average.')
+    st.write('Within each domain, all three variables have equal importance (1/3 each). At the company level the existing MVP weights '
+             'are Governance 0.40 and Financial 0.60. These are model settings, not weights prescribed by the paper.')
+    st.write('Unknown is unassigned belief caused by missing usable information. It is not a third risk grade. Missing inputs remain in '
+             'the calculation with their weights; their weights are not redistributed. Reliability is not applied in this stage.')
+    with st.expander('Step 1 — Overall risk from Governance and Financial', expanded=True):
+        st.dataframe(child_rows(view.overall), hide_index=True, width='stretch')
+        st.write(node_explanation(view.overall))
+    for domain in view.domains:
+        with st.expander(f'Step 2 — {domain.code.title()} risk from its three variables', expanded=True):
+            st.dataframe(child_rows(domain), hide_index=True, width='stretch')
+            st.write(node_explanation(domain))
+
+
 def main() -> None:
     st.set_page_config(page_title='Evidence-Grounded AI Risk Intelligence', layout='wide')
     st.title('Evidence-Grounded AI Risk Intelligence')
     st.caption('Evidence-backed company risk assessment with traceable supporting facts.')
     environ = dict(os.environ)
-    mode = st.radio('Workflow', ('Data foundation validation', 'Load existing assessment', 'New assessment'), horizontal=True)
+    public_view = environ.get('RISK_UI_PUBLIC', 'false').lower() == 'true'
+    if public_view:
+        mode = 'Risk dashboard'
+    else:
+        mode = st.sidebar.radio('Workspace', ('Risk dashboard', 'Data foundation validation', 'Six-variable belief test', 'ER aggregation test', 'Load existing assessment', 'New assessment'))
     if st.session_state.get('workflow_mode') != mode:
-        st.session_state.pop('assessment_view', None); st.session_state.workflow_mode = mode
+        st.session_state.pop('assessment_view', None); st.session_state.pop('leaf_test_view', None); st.session_state.pop('er_view', None); st.session_state.workflow_mode = mode
     try:
-        if mode == 'Data foundation validation':
+        if mode == 'Risk dashboard':
+            from risk_intelligence.ui.dashboard import render_dashboard
+            render_dashboard(environ)
+        elif mode == 'Data foundation validation':
             _foundation(environ)
+        elif mode == 'Six-variable belief test':
+            _leaf_belief_test(environ)
+        elif mode == 'ER aggregation test':
+            _er_aggregation_test(environ)
         elif mode == 'Load existing assessment':
             _select_existing(environ)
         else:
             _new_assessment(environ)
-        view = st.session_state.get('assessment_view') if mode != 'Data foundation validation' else None
+        view = st.session_state.get('assessment_view') if mode not in ('Risk dashboard', 'Data foundation validation', 'Six-variable belief test', 'ER aggregation test') else None
         if view is not None: render_assessment(view)
     except Exception as error:
-        st.session_state.pop('assessment_view', None); _show_error(error)
+        st.session_state.pop('assessment_view', None); st.session_state.pop('leaf_test_view', None); st.session_state.pop('er_view', None); st.session_state.pop('dashboard_view', None); _show_error(error)

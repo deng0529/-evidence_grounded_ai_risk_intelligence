@@ -137,6 +137,13 @@ def calculate_population(code: str, members: ValidatedMembers, *, assessment_dat
         return unavailable(Reason.AMBIGUOUS_SELECTION, inputs)
     if code == "G3.1":
         return _control_changes(groups, inputs, start, end)
+    if code == "G2.2":
+        # Tenure concerns active directors only. A definite past resignation
+        # excludes the appointment even if its historic start date is unavailable.
+        # Missing dates for potentially active directors still fail closed.
+        groups = {identity: fields for identity, fields in groups.items()
+                  if not (type(_value(fields, "OFFICERS_RESIGNED_ON")) is date
+                          and _value(fields, "OFFICERS_RESIGNED_ON") <= assessment_date)}
     directors, failure = _directors(groups)
     if failure:
         return unavailable(failure, inputs)

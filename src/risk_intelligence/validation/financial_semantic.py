@@ -85,7 +85,7 @@ class FinancialSemanticConsistencyRule:
     @property
     def definition(self) -> RuleDefinition:
         """Mandatory semantic gate, with no independent validation-strength candidate."""
-        return RuleDefinition(rule_id='financial.semantic_consistency', rule_version='v1',
+        return RuleDefinition(rule_id='financial.semantic_consistency', rule_version='v2',
             applies_to=('FINANCIAL_FACT',),
             required_inputs=('financial_provenance', 'financial_semantic_evidence'), role=ValidationRole.HARD_FAIL)
 
@@ -122,6 +122,17 @@ class FinancialSemanticConsistencyRule:
             if field is None or not isinstance(field.value, TextValue) or field.value.value is None:
                 return unresolved('Derived semantics require structured derivation evidence')
             derivation = FinancialDerivationEvidence.model_validate_json(field.value.value)
+            # A reviewed reported-subtotal identity has explicit concept operands,
+            # not an exhaustive population of detail rows. Validate its semantics
+            # by reproducing the same approved M3 formula and ordered source IDs.
+            from .financial_derivation import reviewed_subtotal_value
+            if (fact.extraction_method.value == 'DERIVED' and derivation.origin == 'DERIVED'
+                    and derivation.canonical_fact_id == fact.financial_fact_id
+                    and derivation.mapping_version == semantic.mapping_version
+                    and reviewed_subtotal_value(derivation, fact) == fact.value_numeric
+                    and fact.value_numeric is not None):
+                return _outcome(self.definition, context, ValidationStatus.PASS,
+                    'Reviewed reported-subtotal semantics reproduce the exact target', details)
             relationship = {'TOTAL_ASSETS': 'ASSET_SIDE', 'INTEREST_BEARING_DEBT': 'EXHAUSTIVE_INTEREST_BEARING'}.get(fact.canonical_concept)
             if (fact.extraction_method.value != 'DERIVED' or derivation.origin != 'DERIVED'
                     or derivation.canonical_fact_id != fact.financial_fact_id

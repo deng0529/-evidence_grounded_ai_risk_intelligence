@@ -217,3 +217,47 @@ def test_construction_reuse_cannot_create_validation_uplift() -> None:
     assert support.strength == ValidationStrength.NONE
     assert support.outcomes == ()
     assert VALIDATION_FACTOR[support.strength] == Decimal("0.00")
+
+
+def test_sql_loader_preserves_missing_proof_for_typed_completeness_validation():
+    from risk_intelligence.validation.financial_derivation import load_derivation_evidence
+    class SavedRepository:
+        def get_observation_lineage(self, identity):
+            return ({'origin': 'DERIVED', 'mapping_version': 'financial-mapping-v1',
+                     'derivation_version': 'financial-interpretation-v1', 'derivation_rule': 'ASSET_SIDE'},
+                    lineage().components)
+        def get_derivation_proof(self, identity):
+            return None
+    restored = load_derivation_evidence(SavedRepository(), 'f')
+    assert restored.proof is None
+    outcome = FinancialCompletenessRule().execute(context(derived(), restored))
+    assert outcome.result == ValidationStatus.INCONCLUSIVE and outcome.hard_fail
+
+
+def test_reported_subtotal_subtraction_is_reproduced_without_invented_row_proof():
+    from risk_intelligence.ingestion.accounts.derivation import derive_balance_sheet_subtotals, BALANCE_SHEET_DERIVATION_VERSION
+    inputs = tuple(source(identity, value, 'e-' + identity).model_copy(update={
+        'source_concept': '{http://xbrl.frc.org.uk/fr/2025-01-01/core}' + concept})
+        for identity, value, concept in (
+            ('t','70','TotalAssetsLessCurrentLiabilities'),
+            ('ca','50','CurrentAssets'), ('nca','20','NetCurrentAssetsLiabilities')))
+    results = derive_balance_sheet_subtotals(inputs, company_id='c', source_id='s',
+        run_id='r', mapping_version='financial-concepts-v4')
+    assert {f.canonical_concept: f.value_numeric for f, _, _ in results} == {
+        'CURRENT_LIABILITIES': Decimal('30'), 'TOTAL_ASSETS': Decimal('100')}
+    by_id = {f.source_fact_id: f for f in inputs}
+    for fact, ids, rule in results:
+        evidence = FinancialDerivationEvidence(canonical_fact_id=fact.financial_fact_id,
+            origin='DERIVED', mapping_version='financial-concepts-v4',
+            derivation_version=BALANCE_SHEET_DERIVATION_VERSION, derivation_rule=rule,
+            components=tuple(by_id[i] for i in ids))
+        assert evidence.proof is None
+        from risk_intelligence.validation.financial_semantic import FinancialSemanticEvidence, FinancialSemanticConsistencyRule
+        semantic = FinancialSemanticEvidence(canonical_fact_id=fact.financial_fact_id,
+            method='DETERMINISTIC_DERIVATION', mapping_version=evidence.mapping_version)
+        gate = FinancialSemanticConsistencyRule().execute(semantic.attach(context(fact, evidence)))
+        assert gate.result == ValidationStatus.PASS and not gate.hard_fail
+        assert FinancialDerivationIntegrityRule().execute(context(fact, evidence)).result == ValidationStatus.PASS
+        assert not FinancialCompletenessRule().execute(context(fact, evidence)).hard_fail
+        wrong = fact.model_copy(update={'value_numeric': Decimal('999')})
+        assert FinancialDerivationIntegrityRule().execute(context(wrong, evidence)).hard_fail
